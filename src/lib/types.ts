@@ -10,6 +10,7 @@ export type JobStatus =
   | 'extracting'
   | 'converting'
   | 'metadata'
+  | 'finalizing'
   | 'ready'
   | 'downloading'
   | 'completed'

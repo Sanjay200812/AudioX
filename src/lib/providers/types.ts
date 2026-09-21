@@ -21,7 +21,7 @@ export interface IMediaProvider {
   name: string;
   canHandle(urlOrPath: string): boolean;
   analyze(urlOrPath: string): Promise<ProviderAnalysisResult>;
-  prepareMedia(
+  prepareMedia?(
     urlOrPath: string,
     outputDir: string,
     onProgress?: (stage: string, percent: number) => void

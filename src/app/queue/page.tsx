@@ -112,53 +112,75 @@ export default function QueuePage() {
       ) : (
         <>
           {/* Playlist Queue Finished Screen */}
-          {isAllFinished && (
-            <div className="p-6 sm:p-8 rounded-2xl glass-panel border border-emerald-500/30 bg-emerald-950/20 shadow-2xl flex flex-col items-center text-center animate-in fade-in zoom-in-95">
-              <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mb-3">
-                <PartyPopper size={28} />
-              </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                Playlist Queue Finished
-              </h2>
-              <p className="text-xs sm:text-sm text-zinc-300 mt-1">
-                {totalCount} total tracks processed
-              </p>
+          {isAllFinished && (() => {
+            const isAllFailed = totalCount > 0 && failedJobs.length === totalCount;
+            const isMixed = failedJobs.length > 0 && completedJobs.length > 0;
 
-              <div className="flex items-center gap-4 my-4 text-xs font-semibold">
-                <span className="text-emerald-400">{completedJobs.length} Downloaded</span>
-                {failedJobs.length > 0 && <span className="text-red-400">{failedJobs.length} Failed</span>}
-                {skippedJobs.length > 0 && <span className="text-amber-400">{skippedJobs.length} Skipped</span>}
-              </div>
+            let finishTitle = 'Playlist Download Complete';
+            let finishBorderColor = 'border-emerald-500/30 bg-emerald-950/20';
+            let finishIconBg = 'bg-emerald-500/20 text-emerald-400';
+            let FinishIcon = PartyPopper;
 
-              <div className="flex items-center gap-3 mt-2 flex-wrap justify-center">
-                {failedJobs.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => failedJobs.forEach((j) => retryJob(j.id))}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-500 transition-colors shadow-sm cursor-pointer"
+            if (isAllFailed) {
+              finishTitle = 'Download Failed';
+              finishBorderColor = 'border-red-500/30 bg-red-950/20';
+              finishIconBg = 'bg-red-500/20 text-red-400';
+              FinishIcon = AlertCircle;
+            } else if (isMixed || failedJobs.length > 0) {
+              finishTitle = 'Queue Finished with Errors';
+              finishBorderColor = 'border-amber-500/30 bg-amber-950/20';
+              finishIconBg = 'bg-amber-500/20 text-amber-400';
+              FinishIcon = AlertCircle;
+            }
+
+            return (
+              <div className={`p-6 sm:p-8 rounded-2xl glass-panel border ${finishBorderColor} shadow-2xl flex flex-col items-center text-center animate-in fade-in zoom-in-95`}>
+                <div className={`w-14 h-14 rounded-2xl ${finishIconBg} flex items-center justify-center mb-3`}>
+                  <FinishIcon size={28} />
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+                  {finishTitle}
+                </h2>
+                <p className="text-xs sm:text-sm text-zinc-300 mt-1">
+                  {totalCount} total tracks processed
+                </p>
+
+                <div className="flex items-center gap-4 my-4 text-xs font-semibold">
+                  <span className="text-emerald-400">{completedJobs.length} Downloaded</span>
+                  {failedJobs.length > 0 && <span className="text-red-400">{failedJobs.length} Failed</span>}
+                  {skippedJobs.length > 0 && <span className="text-amber-400">{skippedJobs.length} Skipped</span>}
+                </div>
+
+                <div className="flex items-center gap-3 mt-2 flex-wrap justify-center">
+                  {failedJobs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => failedJobs.forEach((j) => retryJob(j.id))}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-red-600 hover:bg-red-500 transition-colors shadow-sm cursor-pointer"
+                    >
+                      <RotateCcw size={14} />
+                      <span>Retry {failedJobs.length} Failed</span>
+                    </button>
+                  )}
+
+                  <Link
+                    href="/downloads"
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-sm"
                   >
-                    <RotateCcw size={14} />
-                    <span>Retry {failedJobs.length} Failed</span>
-                  </button>
-                )}
+                    <span>View Downloads</span>
+                    <ArrowRight size={14} />
+                  </Link>
 
-                <Link
-                  href="/downloads"
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition-colors shadow-sm"
-                >
-                  <span>View Downloads</span>
-                  <ArrowRight size={14} />
-                </Link>
-
-                <Link
-                  href="/"
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white bg-white/10 hover:bg-white/15 transition-colors"
-                >
-                  <span>Back Home</span>
-                </Link>
+                  <Link
+                    href="/"
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-zinc-300 hover:text-white bg-white/10 hover:bg-white/15 transition-colors"
+                  >
+                    <span>Back Home</span>
+                  </Link>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Currently Converting Card */}
           {activeJob && (

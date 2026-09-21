@@ -1,12 +1,14 @@
 import EventEmitter from 'events';
 import crypto from 'crypto';
-import path from 'path';
-import fs from 'fs';
 import { QueueJob, ClientQueueJob, AudioFormat, AudioQuality, MediaSource, FilenameFormat } from '../types';
-import { getProvider } from '../providers/registry';
-import { convertAudio } from '../media/ffmpeg';
-import { createJobWorkspace, cleanJobWorkspace, registerDownloadToken } from '../storage/temp';
+import { cleanJobWorkspace, registerDownloadToken } from '../storage/temp';
 import { sanitizeFileName, deduplicateFileName } from '../media/sanitizer';
+import {
+  isWorkerConfigured,
+  createWorkerJob,
+  getWorkerJob,
+  cancelWorkerJob,
+} from '../worker-client';
 
 export interface CreateJobInput {
   source: MediaSource;
@@ -165,6 +167,7 @@ export class QueueEngine extends EventEmitter {
     job.stage = 'idle';
     this.emitEvent('job:cancelled', job);
 
+    cancelWorkerJob(id).catch(() => {});
     cleanJobWorkspace(id);
 
     if (this.activeJobId === id) {
@@ -187,6 +190,7 @@ export class QueueEngine extends EventEmitter {
     job.stage = 'idle';
     this.emitEvent('job:skipped', job);
 
+    cancelWorkerJob(id).catch(() => {});
     cleanJobWorkspace(id);
 
     if (this.activeJobId === id) {
@@ -286,107 +290,133 @@ export class QueueEngine extends EventEmitter {
     this.emitEvent('job:started', nextJob);
     this.emitQueueUpdate();
 
-    const workspace = createJobWorkspace(nextJob.id);
+    if (!isWorkerConfigured()) {
+      const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
+      console.warn(`[queue:job:error] id=${nextJob.id} duration=${duration}ms AUDIOX_WORKER_URL is not configured. Media processing worker required.`);
+      nextJob.status = 'failed';
+      nextJob.stage = 'idle';
+      nextJob.error = 'Audio processing service is temporarily unavailable.';
+      this.emitEvent('job:failed', nextJob);
+      this.emitQueueUpdate();
+
+      this.activeJobId = null;
+      this.isProcessing = false;
+      this.processNext();
+      return;
+    }
 
     try {
-      // 1. Resolve Provider
-      const provider = getProvider(nextJob.sourceUrl);
-
-      // 2. Fetch/Prepare media
-      nextJob.status = 'fetching';
-      nextJob.stage = 'fetching';
-      nextJob.progress = 15;
-      console.log(`[queue:job:fetching] id=${nextJob.id} provider=${provider.name} url=${nextJob.sourceUrl}`);
-      this.emitEvent('job:fetching', nextJob);
-
-      const prepared = await provider.prepareMedia(
-        nextJob.sourceUrl,
-        workspace,
-        (stageDesc, pct) => {
-          if (nextJob && nextJob.status === 'fetching') {
-            nextJob.progress = Math.max(nextJob.progress, pct);
-            this.emitEvent('job:progress', nextJob);
-          }
-        }
-      );
-
-      // 3. Audio Conversion
-      nextJob.status = 'converting';
-      nextJob.stage = 'converting';
-      nextJob.progress = 50;
-      console.log(`[queue:job:converting] id=${nextJob.id} sourceFile=${prepared.sourceFilePath}`);
-      this.emitEvent('job:converting', nextJob);
-
-      // Generate clean sanitized filename
-      const title = nextJob.title || prepared.title || 'Track';
-      const artist = nextJob.artist || prepared.artist || '';
-      const rawFileName = sanitizeFileName(title, artist, nextJob.format);
-      const cleanFileName = deduplicateFileName(rawFileName, this.existingFileNames);
-      this.existingFileNames.add(cleanFileName);
-
-      const outputFileName = `converted.${nextJob.format}`;
-      const finalOutputPath = path.join(workspace, outputFileName);
-
-      await convertAudio({
-        inputPath: prepared.sourceFilePath,
-        outputPath: finalOutputPath,
+      console.log(`[queue:job:forward] id=${nextJob.id} url="${nextJob.sourceUrl}" format=${nextJob.format} quality=${nextJob.quality}`);
+      const workerResponse = await createWorkerJob({
+        id: nextJob.id,
+        sourceUrl: nextJob.sourceUrl,
         format: nextJob.format,
         quality: nextJob.quality,
-        metadata: {
-          title,
-          artist,
-          album: nextJob.playlistTitle || prepared.album,
-          track: nextJob.playlistIndex,
-          coverPath: prepared.coverPath,
-        },
-        onProgress: (pct) => {
-          if (nextJob && nextJob.status === 'converting') {
-            nextJob.progress = Math.min(95, 50 + Math.floor(pct * 0.45));
-            this.emitEvent('job:progress', nextJob);
-          }
-        },
+        title: nextJob.title,
+        artist: nextJob.artist,
+        thumbnail: nextJob.thumbnail,
+        duration: nextJob.duration,
       });
 
-      // 4. Finalize and register download token
-      nextJob.stage = 'finalizing';
-      nextJob.progress = 98;
-      this.emitEvent('job:progress', nextJob);
+      const remoteJobId = workerResponse.jobId || nextJob.id;
 
-      const stats = fs.statSync(finalOutputPath);
-      const mimeType = nextJob.format === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
-
-      const downloadToken = registerDownloadToken({
-        filePath: finalOutputPath,
-        fileName: cleanFileName,
-        mimeType,
-      });
-
-      // Clean source raw files to save disk immediately, keep only converted audio
-      try {
-        if (prepared.sourceFilePath !== finalOutputPath && fs.existsSync(prepared.sourceFilePath)) {
-          fs.unlinkSync(prepared.sourceFilePath);
+      let isDone = false;
+      while (!isDone) {
+        // Check if job was cancelled or skipped locally while processing
+        const currentJob = this.jobs.get(nextJob.id);
+        if (!currentJob || currentJob.status === 'cancelled' || currentJob.status === 'skipped') {
+          await cancelWorkerJob(remoteJobId).catch(() => {});
+          break;
         }
-      } catch {}
 
-      nextJob.status = 'ready';
-      nextJob.stage = 'ready';
-      nextJob.progress = 100;
-      nextJob.downloadToken = downloadToken;
-      nextJob.fileName = cleanFileName;
-      nextJob.fileSize = stats.size;
-      nextJob.temporaryFilePath = finalOutputPath;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
-      console.log(`[queue:job:ready] id=${nextJob.id} token=${downloadToken} size=${stats.size} duration=${duration}ms`);
+        const workerJob = await getWorkerJob(remoteJobId);
+        if (!workerJob) {
+          continue;
+        }
 
-      this.emitEvent('job:ready', nextJob);
-      this.emitQueueUpdate();
+        // Pass through authentic stages and percentages from worker
+        if (workerJob.status === 'fetching') {
+          nextJob.status = 'fetching';
+          nextJob.stage = 'fetching';
+          nextJob.progress = workerJob.progress || 15;
+          this.emitEvent('job:fetching', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'extracting') {
+          nextJob.status = 'extracting';
+          nextJob.stage = 'extracting';
+          nextJob.progress = workerJob.progress || 40;
+          this.emitEvent('job:progress', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'converting') {
+          nextJob.status = 'converting';
+          nextJob.stage = 'converting';
+          nextJob.progress = workerJob.progress || 65;
+          this.emitEvent('job:converting', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'finalizing') {
+          nextJob.stage = 'finalizing';
+          nextJob.progress = workerJob.progress || 90;
+          this.emitEvent('job:progress', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'ready') {
+          isDone = true;
+
+          const title = nextJob.title || workerJob.title || 'Track';
+          const artist = nextJob.artist || '';
+          const rawFileName = sanitizeFileName(title, artist, nextJob.format);
+          const cleanFileName = deduplicateFileName(rawFileName, this.existingFileNames);
+          this.existingFileNames.add(cleanFileName);
+
+          const mimeType = nextJob.format === 'mp3' ? 'audio/mpeg' : 'audio/mp4';
+          const downloadToken = registerDownloadToken({
+            remoteJobId,
+            fileName: cleanFileName,
+            fileSize: workerJob.fileSize,
+            mimeType: workerJob.mimeType || mimeType,
+          });
+
+          nextJob.status = 'ready';
+          nextJob.stage = 'ready';
+          nextJob.progress = 100;
+          nextJob.downloadToken = downloadToken;
+          nextJob.fileName = cleanFileName;
+          nextJob.fileSize = workerJob.fileSize;
+
+          const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
+          console.log(`[queue:job:ready] id=${nextJob.id} remoteId=${remoteJobId} token=${downloadToken} size=${workerJob.fileSize} duration=${duration}ms`);
+
+          this.emitEvent('job:ready', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'failed') {
+          isDone = true;
+          const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
+          console.error(`[queue:job:failed] id=${nextJob.id} remoteId=${remoteJobId} duration=${duration}ms worker_error:`, workerJob.error);
+          nextJob.status = 'failed';
+          nextJob.stage = 'idle';
+          nextJob.error = 'Audio processing service could not start.';
+          this.emitEvent('job:failed', nextJob);
+          this.emitQueueUpdate();
+        } else if (workerJob.status === 'cancelled') {
+          isDone = true;
+          nextJob.status = 'cancelled';
+          nextJob.stage = 'idle';
+          this.emitEvent('job:cancelled', nextJob);
+          this.emitQueueUpdate();
+        }
+      }
     } catch (err: any) {
       const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
       console.error(`[queue:job:failed] id=${nextJob.id} duration=${duration}ms error:`, err?.message || err);
       nextJob.status = 'failed';
       nextJob.stage = 'idle';
-      nextJob.error = err?.message || 'Processing failed.';
+      const errMsg = (err?.message || '').toLowerCase();
+      if (errMsg.includes('unavailable') || errMsg.includes('fetch') || errMsg.includes('econnrefused')) {
+        nextJob.error = 'Audio processing service is temporarily unavailable.';
+      } else {
+        nextJob.error = 'Audio processing service could not start.';
+      }
       this.emitEvent('job:failed', nextJob);
       this.emitQueueUpdate();
     } finally {

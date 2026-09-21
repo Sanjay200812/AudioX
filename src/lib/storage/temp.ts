@@ -7,9 +7,10 @@ const BASE_TEMP_DIR = process.env.TEMP_DIR || path.join(os.tmpdir(), 'audiox');
 const FILE_EXPIRY_MS = (parseInt(process.env.FILE_EXPIRY_MINUTES || '30', 10) || 30) * 60 * 1000;
 
 // Token record in memory
-interface DownloadTokenRecord {
+export interface DownloadTokenRecord {
   token: string;
-  filePath: string;
+  filePath?: string;
+  remoteJobId?: string;
   fileName: string;
   fileSize: number;
   mimeType: string;
@@ -55,18 +56,26 @@ export function cleanJobWorkspace(jobId: string): void {
 }
 
 export function registerDownloadToken(params: {
-  filePath: string;
+  filePath?: string;
+  remoteJobId?: string;
   fileName: string;
+  fileSize?: number;
   mimeType: string;
 }): string {
   const token = crypto.randomUUID();
-  const stats = fs.statSync(params.filePath);
+  let size = params.fileSize || 0;
+  if (!size && params.filePath && fs.existsSync(params.filePath)) {
+    try {
+      size = fs.statSync(params.filePath).size;
+    } catch {}
+  }
 
   const record: DownloadTokenRecord = {
     token,
     filePath: params.filePath,
+    remoteJobId: params.remoteJobId,
     fileName: params.fileName,
-    fileSize: stats.size,
+    fileSize: size,
     mimeType: params.mimeType,
     createdAt: Date.now(),
     expiresAt: Date.now() + FILE_EXPIRY_MS,
@@ -74,11 +83,13 @@ export function registerDownloadToken(params: {
 
   tokenStore.set(token, record);
 
-  // Write token.json in job workspace for multi-process and hot-reload resilience
-  try {
-    const metaPath = path.join(path.dirname(params.filePath), 'token.json');
-    fs.writeFileSync(metaPath, JSON.stringify(record), 'utf8');
-  } catch {}
+  // Write token.json in job workspace if local directory exists
+  if (params.filePath) {
+    try {
+      const metaPath = path.join(path.dirname(params.filePath), 'token.json');
+      fs.writeFileSync(metaPath, JSON.stringify(record), 'utf8');
+    } catch {}
+  }
 
   return token;
 }
@@ -117,14 +128,15 @@ export function getDownloadRecord(token: string): DownloadTokenRecord | null {
     // Expired
     tokenStore.delete(token);
     try {
-      if (fs.existsSync(record.filePath)) {
+      if (record.filePath && fs.existsSync(record.filePath)) {
         fs.unlinkSync(record.filePath);
       }
     } catch {}
     return null;
   }
 
-  if (!fs.existsSync(record.filePath)) {
+  // If it's a local file record, ensure the file still exists
+  if (!record.remoteJobId && record.filePath && !fs.existsSync(record.filePath)) {
     tokenStore.delete(token);
     return null;
   }
@@ -143,7 +155,7 @@ export function runStorageCleanup(): { cleanedTokens: number; cleanedDirs: numbe
       tokenStore.delete(token);
       cleanedTokens++;
       try {
-        if (fs.existsSync(record.filePath)) {
+        if (record.filePath && fs.existsSync(record.filePath)) {
           fs.unlinkSync(record.filePath);
         }
       } catch {}
