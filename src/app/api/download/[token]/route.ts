@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import { getDownloadRecord } from '@/lib/storage/temp';
-import { fetchWorkerDownload } from '@/lib/worker-client';
 
 export async function GET(
   _req: NextRequest,
@@ -26,36 +25,6 @@ export async function GET(
     .replace(/['()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
     .replace(/\*/g, '%2A');
 
-  // 1. If remote job on external worker, stream directly from worker
-  if (record.remoteJobId) {
-    try {
-      const workerRes = await fetchWorkerDownload(record.remoteJobId);
-      if (!workerRes.ok) {
-        console.error(`[download] Worker fetch failed: status ${workerRes.status}`);
-        return NextResponse.json({ error: 'Failed to retrieve audio from processing worker.' }, { status: 502 });
-      }
-
-      const headers = new Headers();
-      headers.set('Content-Type', record.mimeType || workerRes.headers.get('Content-Type') || 'audio/mpeg');
-      if (record.fileSize) {
-        headers.set('Content-Length', record.fileSize.toString());
-      } else if (workerRes.headers.get('Content-Length')) {
-        headers.set('Content-Length', workerRes.headers.get('Content-Length')!);
-      }
-      headers.set('Content-Disposition', `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedFileName}`);
-      headers.set('Cache-Control', 'no-store, max-age=0');
-
-      return new Response(workerRes.body, {
-        status: 200,
-        headers,
-      });
-    } catch (err: any) {
-      console.error('[download] Remote stream error:', err);
-      return NextResponse.json({ error: 'Audio processing service is temporarily unavailable.' }, { status: 503 });
-    }
-  }
-
-  // 2. Fallback if local file exists
   if (record.filePath && fs.existsSync(record.filePath)) {
     try {
       const fileBuffer = fs.readFileSync(record.filePath);
@@ -76,4 +45,3 @@ export async function GET(
 
   return NextResponse.json({ error: 'Audio file not found or expired.' }, { status: 404 });
 }
-

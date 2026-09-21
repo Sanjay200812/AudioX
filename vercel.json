@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/media/process.py": {
+      "maxDuration": 60
+    }
+  }
+}

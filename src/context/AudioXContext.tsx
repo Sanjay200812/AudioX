@@ -70,7 +70,7 @@ interface AudioXContextType {
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
-  defaultFormat: 'mp3',
+  defaultFormat: 'm4a',
   defaultQuality: 'high',
   filenameFormat: 'artist_title',
   autoStartQueue: true,
@@ -91,8 +91,11 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; type?: 'info' | 'success' | 'error' }>>([]);
   const [dismissedRecovery, setDismissedRecovery] = useState(false);
 
-  // Track downloaded tokens to prevent duplicate auto-download loops
-  const downloadedTokensRef = useRef<Set<string>>(new Set());
+  // Client queue runner state
+  const isProcessingRef = useRef(false);
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+  const hasUserTriggeredRef = useRef(true);
 
   const addToast = useCallback((message: string, type: 'info' | 'success' | 'error' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -106,49 +109,53 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // Load settings and history from IndexedDB and localStorage
+  // Load persistent settings & history & queue jobs on mount
   useEffect(() => {
     try {
-      const savedSettings = localStorage.getItem('audiox_settings');
-      if (savedSettings) {
-        setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) });
+      const storedSettings = localStorage.getItem('audiox_settings');
+      if (storedSettings) {
+        setSettings((prev) => ({ ...prev, ...JSON.parse(storedSettings) }));
       }
-
-      // First load from IndexedDB
-      getAllDownloadsFromIndexedDB().then((indexedItems) => {
-        if (indexedItems && indexedItems.length > 0) {
-          setHistory(indexedItems);
-          try {
-            localStorage.setItem('audiox_history', JSON.stringify(indexedItems.slice(0, 100)));
-          } catch {}
-        } else {
-          // Fallback to localStorage if IndexedDB is empty
-          const savedHistory = localStorage.getItem('audiox_history');
-          if (savedHistory) {
-            try {
-              const parsed: DownloadHistoryItem[] = JSON.parse(savedHistory);
-              setHistory(parsed);
-              // Migrate localStorage items into IndexedDB
-              parsed.forEach((item) => {
-                saveDownloadToIndexedDB({
-                  ...item,
-                  mediaId: item.mediaId || item.id,
-                }).catch(() => {});
-              });
-            } catch {}
-          }
-        }
-      }).catch(() => {
-        const savedHistory = localStorage.getItem('audiox_history');
-        if (savedHistory) {
-          try {
-            setHistory(JSON.parse(savedHistory));
-          } catch {}
-        }
-      });
     } catch {}
+
+    try {
+      const storedQueue = localStorage.getItem('audiox_queue_jobs');
+      if (storedQueue) {
+        const parsed: ClientQueueJob[] = JSON.parse(storedQueue);
+        if (Array.isArray(parsed)) {
+          // Reset any dangling active states from prior session
+          const restored = parsed.map((j) => {
+            if (['preparing', 'fetching', 'extracting', 'converting'].includes(j.status)) {
+              return { ...j, status: 'queued' as const, stage: 'idle' as const, progress: 0 };
+            }
+            return j;
+          });
+          setJobs(restored);
+        }
+      }
+    } catch {}
+
+    // Load download history from IndexedDB with localStorage fallback
+    getAllDownloadsFromIndexedDB()
+      .then((items) => {
+        if (items && items.length > 0) {
+          setHistory(items);
+        } else {
+          try {
+            const raw = localStorage.getItem('audiox_history');
+            if (raw) setHistory(JSON.parse(raw));
+          } catch {}
+        }
+      })
+      .catch(() => {
+        try {
+          const raw = localStorage.getItem('audiox_history');
+          if (raw) setHistory(JSON.parse(raw));
+        } catch {}
+      });
   }, []);
 
+  // Save settings on change
   const updateSettings = useCallback((newSettings: Partial<UserSettings>) => {
     setSettings((prev) => {
       const updated = { ...prev, ...newSettings };
@@ -157,211 +164,191 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
       } catch {}
       return updated;
     });
-  }, []);
+    addToast('Settings updated', 'success');
+  }, [addToast]);
 
-  const clearHistory = useCallback(() => {
-    setHistory([]);
-    clearAllDownloadsFromIndexedDB().catch(() => {});
+  // Persist queue jobs to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('audiox_queue_jobs', JSON.stringify(jobs.slice(0, 100)));
+    } catch {}
+  }, [jobs]);
+
+  // Clear & remove history
+  const clearHistory = useCallback(async () => {
+    await clearAllDownloadsFromIndexedDB().catch(() => {});
     try {
       localStorage.removeItem('audiox_history');
     } catch {}
+    setHistory([]);
     addToast('Download history cleared', 'info');
   }, [addToast]);
 
   const removeHistoryItem = useCallback((id: string) => {
     setHistory((prev) => {
-      const updated = prev.filter((item) => item.id !== id);
+      const next = prev.filter((item) => item.id !== id);
       try {
-        localStorage.setItem('audiox_history', JSON.stringify(updated));
+        localStorage.setItem('audiox_history', JSON.stringify(next));
       } catch {}
-      return updated;
+      return next;
     });
   }, []);
 
-  // Trigger file download in browser
-  const triggerBrowserDownload = useCallback((token: string, fileName?: string): boolean => {
-    try {
-      const link = document.createElement('a');
-      link.href = `/api/download/${token}`;
-      if (fileName) {
-        link.setAttribute('download', fileName);
-      }
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        if (link.parentNode) {
-          link.parentNode.removeChild(link);
-        }
-      }, 500);
-      return true;
-    } catch (err) {
-      console.error('Download trigger error:', err);
-      return false;
-    }
-  }, []);
-
-  // Mark job completed on server & client
-  const markJobDone = useCallback(async (job: ClientQueueJob) => {
-    try {
-      await fetch(`/api/jobs/${job.id}/complete`, { method: 'POST' });
-    } catch {}
-
-    // Save to persistent download history if enabled
-    if (settings.saveHistory) {
-      const newItem: DownloadHistoryItem = {
-        id: job.id,
-        mediaId: job.mediaId || job.id,
-        playlistId: job.playlistId,
-        title: job.title,
-        artist: job.artist,
-        thumbnail: job.thumbnail,
-        source: job.source,
-        format: job.format,
-        quality: job.quality,
-        fileName: job.fileName || `${job.title}.${job.format}`,
-        fileSize: job.fileSize,
-        fileSizeFormatted: job.fileSize ? `${(job.fileSize / (1024 * 1024)).toFixed(1)} MB` : undefined,
-        downloadToken: job.downloadToken,
-        completedAt: Date.now(),
-      };
-
-      // Persist to IndexedDB
-      saveDownloadToIndexedDB(newItem).catch(() => {});
-
-      setHistory((prev) => {
-        const exists = prev.some((h) => h.id === job.id);
-        if (exists) return prev;
-        const updated = [newItem, ...prev];
-        try {
-          localStorage.setItem('audiox_history', JSON.stringify(updated.slice(0, 100)));
-        } catch {}
-        return updated;
-      });
-    }
-
-    // Auto-remove completed item from queue if configured
-    if (settings.autoRemoveCompleted === 'immediately') {
-      setTimeout(() => {
-        fetch(`/api/jobs/${job.id}`, { method: 'DELETE' }).catch(() => {});
-      }, 1000);
-    } else if (settings.autoRemoveCompleted === '5min') {
-      setTimeout(() => {
-        fetch(`/api/jobs/${job.id}`, { method: 'DELETE' }).catch(() => {});
-      }, 5 * 60 * 1000);
-    }
-  }, [settings.saveHistory, settings.autoRemoveCompleted, history]);
-
-  // Handle a newly ready job
-  const handleJobReady = useCallback((job: ClientQueueJob) => {
-    if (!job.downloadToken) return;
-
-    if (downloadedTokensRef.current.has(job.downloadToken)) {
-      return;
-    }
-
-    if (settings.autoDownload && settings.downloadMode === 'auto') {
-      downloadedTokensRef.current.add(job.downloadToken);
-      const success = triggerBrowserDownload(job.downloadToken, job.fileName);
-      if (success) {
-        addToast(`Downloaded: ${job.title}`, 'success');
-        markJobDone(job);
-      } else {
-        setIsBrowserDownloadBlocked(true);
-        addToast('Your browser blocked automatic multiple downloads. Allow downloads for AudioX to continue.', 'error');
-      }
-    } else {
-      addToast(`Ready to download: ${job.title}`, 'info');
-    }
-  }, [settings.autoDownload, settings.downloadMode, triggerBrowserDownload, addToast, markJobDone]);
-
-  // Manual download trigger
-  const downloadTrackManually = useCallback((job: ClientQueueJob) => {
-    if (!job.downloadToken) return;
-    triggerBrowserDownload(job.downloadToken, job.fileName);
-    addToast(`Downloading: ${job.title}`, 'success');
-    markJobDone(job);
-  }, [triggerBrowserDownload, addToast, markJobDone]);
-
-  // SSE Subscription with HTTP snapshot fallback for live queue updates
+  // Sequential Client-Side Queue Orchestrator (Concurrency = 1)
   useEffect(() => {
-    let eventSource: EventSource | null = null;
-    let retryTimeout: NodeJS.Timeout | null = null;
-    let pollInterval: NodeJS.Timeout | null = null;
+    if (isProcessingRef.current) return;
+    if (!settings.autoStartQueue && !hasUserTriggeredRef.current) return;
 
-    const fetchJobsSnapshot = async () => {
+    // Pick next queued track in FIFO order
+    const nextJob = jobs.find((j) => j.status === 'queued');
+    if (!nextJob) return;
+
+    isProcessingRef.current = true;
+    activeJobIdRef.current = nextJob.id;
+
+    const controller = new AbortController();
+    activeAbortControllerRef.current = controller;
+
+    // Transition track to active fetching stage
+    setJobs((prev) =>
+      prev.map((j) =>
+        j.id === nextJob.id
+          ? { ...j, status: 'fetching' as const, stage: 'fetching' as const, progress: 15, startedAt: Date.now(), error: undefined }
+          : j
+      )
+    );
+
+    // Timeout safety: 60s maxDuration for Vercel
+    const timeoutId = setTimeout(() => {
+      controller.abort('timeout');
+    }, 60000);
+
+    (async () => {
+      let progressTimer: NodeJS.Timeout | null = null;
       try {
-        const res = await fetch('/api/jobs');
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.jobs)) {
-            setJobs(data.jobs);
-            data.jobs.forEach((j: ClientQueueJob) => {
-              if (j.status === 'ready' && j.downloadToken) {
-                handleJobReady(j);
-              }
-            });
+        // Smooth authentic progress updates while waiting for media
+        progressTimer = setInterval(() => {
+          setJobs((prev) =>
+            prev.map((j) => {
+              if (j.id !== nextJob.id) return j;
+              if (j.progress < 50) return { ...j, progress: j.progress + 6 };
+              if (j.progress < 85) return { ...j, stage: 'converting' as const, progress: j.progress + 4 };
+              return j;
+            })
+          );
+        }, 1200);
+
+        const res = await fetch('/api/media/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: nextJob.sourceUrl,
+            format: nextJob.format,
+            quality: nextJob.quality,
+            title: nextJob.title,
+          }),
+          signal: controller.signal,
+        });
+
+        if (progressTimer) clearInterval(progressTimer);
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+          let errMessage = 'Unable to process this track.';
+          try {
+            const data = await res.json();
+            if (data.error) errMessage = data.error;
+          } catch {}
+          throw new Error(errMessage);
+        }
+
+        // Extract filename from response headers or fallback
+        const disposition = res.headers.get('Content-Disposition') || '';
+        let fileName = `${nextJob.title}.${nextJob.format}`;
+        const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+        if (match && match[1]) {
+          try {
+            fileName = decodeURIComponent(match[1]);
+          } catch {
+            fileName = match[1];
           }
         }
-      } catch {}
-    };
 
-    // Initial snapshot on mount
-    fetchJobsSnapshot();
+        const blob = await res.blob();
 
-    const connectSSE = () => {
-      eventSource = new EventSource('/api/jobs/stream');
+        // Trigger immediate browser download
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
 
-      eventSource.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          if (data.type === 'init' && Array.isArray(data.jobs)) {
-            setJobs(data.jobs);
-          } else if (data.type === 'queue:updated' && Array.isArray(data.jobs)) {
-            setJobs(data.jobs);
-          } else if (data.job) {
-            setJobs((prev) => {
-              const idx = prev.findIndex((j) => j.id === data.job.id);
-              if (idx === -1) {
-                return [...prev, data.job];
-              }
-              const next = [...prev];
-              next[idx] = data.job;
-              return next;
-            });
+        // Mark complete and update state
+        const completedJob: ClientQueueJob = {
+          ...nextJob,
+          status: 'completed',
+          stage: 'ready',
+          progress: 100,
+          fileName,
+          fileSize: blob.size,
+          completedAt: Date.now(),
+        };
 
-            if (data.type === 'job:ready') {
-              handleJobReady(data.job);
-            } else if (data.type === 'job:failed') {
-              addToast(`Failed: ${data.job.title}`, 'error');
-            } else if (data.type === 'job:skipped') {
-              addToast(`Skipped: ${data.job.title}`, 'info');
-            }
-          }
-        } catch {}
-      };
+        setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? completedJob : j)));
+        addToast(`Downloaded: ${nextJob.title}`, 'success');
 
-      eventSource.onerror = () => {
-        if (eventSource) {
-          eventSource.close();
+        // Persist to download history
+        if (settings.saveHistory) {
+          const historyItem: DownloadHistoryItem = {
+            id: nextJob.id,
+            mediaId: nextJob.mediaId || nextJob.id,
+            playlistId: nextJob.playlistId,
+            title: nextJob.title,
+            artist: nextJob.artist,
+            thumbnail: nextJob.thumbnail,
+            source: nextJob.source,
+            format: nextJob.format,
+            quality: nextJob.quality,
+            fileName,
+            fileSize: blob.size,
+            fileSizeFormatted: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
+            completedAt: Date.now(),
+          };
+          saveDownloadToIndexedDB(historyItem).catch(() => {});
+          setHistory((prev) => [historyItem, ...prev.filter((h) => h.id !== nextJob.id)]);
         }
-        // Immediately fetch snapshot if SSE dropped to update any pending states
-        fetchJobsSnapshot();
-        retryTimeout = setTimeout(connectSSE, 3000);
-      };
-    };
+      } catch (err: any) {
+        if (progressTimer) clearInterval(progressTimer);
+        clearTimeout(timeoutId);
 
-    connectSSE();
+        const isTimeout = controller.signal.aborted && controller.signal.reason === 'timeout';
+        const isAbort = controller.signal.aborted;
 
-    // Fallback polling every 4 seconds to guarantee state sync even if SSE is interrupted
-    pollInterval = setInterval(fetchJobsSnapshot, 4000);
-
-    return () => {
-      if (eventSource) eventSource.close();
-      if (retryTimeout) clearTimeout(retryTimeout);
-      if (pollInterval) clearInterval(pollInterval);
-    };
-  }, [handleJobReady, addToast]);
+        if (isTimeout) {
+          const errorMsg = 'This media took too long to process.';
+          setJobs((prev) =>
+            prev.map((j) => (j.id === nextJob.id ? { ...j, status: 'failed', stage: 'idle', error: errorMsg } : j))
+          );
+          addToast(errorMsg, 'error');
+        } else if (isAbort) {
+          // Handled via user cancel or skip
+        } else {
+          const errorMsg = err.message || 'Unable to process this track.';
+          setJobs((prev) =>
+            prev.map((j) => (j.id === nextJob.id ? { ...j, status: 'failed', stage: 'idle', error: errorMsg } : j))
+          );
+          addToast(`Failed: ${nextJob.title}`, 'error');
+        }
+      } finally {
+        isProcessingRef.current = false;
+        activeJobIdRef.current = null;
+        activeAbortControllerRef.current = null;
+      }
+    })();
+  }, [jobs, settings.autoStartQueue, settings.saveHistory, addToast]);
 
   const isDownloadedSync = useCallback(
     (mediaId: string, format?: AudioFormat): boolean => {
@@ -413,34 +400,38 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     source?: 'youtube' | 'local';
     startImmediately?: boolean;
   }) => {
-    const res = await fetch('/api/jobs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...params,
-        format: params.format || settings.defaultFormat,
-        quality: params.quality || settings.defaultQuality,
-        filenameFormat: settings.filenameFormat,
-      }),
+    hasUserTriggeredRef.current = true;
+    const newJob: ClientQueueJob = {
+      id: crypto.randomUUID(),
+      source: params.source || 'youtube',
+      sourceUrl: params.sourceUrl,
+      mediaId: params.mediaId,
+      title: params.title,
+      artist: params.artist,
+      thumbnail: params.thumbnail || '',
+      duration: params.duration || 0,
+      format: params.format || settings.defaultFormat,
+      quality: params.quality || settings.defaultQuality,
+      status: 'queued',
+      stage: 'idle',
+      progress: 0,
+      createdAt: Date.now(),
+      retryCount: 0,
+    };
+
+    setJobs((prev) => {
+      if (params.startImmediately) {
+        // Place at front of queued items
+        const activeOrDone = prev.filter((j) => j.status !== 'queued');
+        const queued = prev.filter((j) => j.status === 'queued');
+        return [...activeOrDone, newJob, ...queued];
+      }
+      return [...prev, newJob];
     });
 
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to queue media.');
-    }
-
-    const data = await res.json();
-    if (data.job) {
-      setJobs((prev) => {
-        const exists = prev.some((j) => j.id === data.job.id);
-        if (exists) return prev;
-        return [...prev, data.job];
-      });
-    }
     addToast(`Added to queue: ${params.title}`, 'success');
-
-    return data.job;
-  }, [settings.defaultFormat, settings.defaultQuality, settings.filenameFormat, addToast]);
+    return newJob;
+  }, [settings.defaultFormat, settings.defaultQuality, addToast]);
 
   const addPlaylistBatch = useCallback(async (params: {
     tracks: PlaylistTrack[];
@@ -450,88 +441,118 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     quality?: AudioQuality;
     startImmediately?: boolean;
   }) => {
+    hasUserTriggeredRef.current = true;
     const validTracks = params.tracks.filter((t) => t.isAvailable !== false);
     if (validTracks.length === 0) {
       throw new Error('No available tracks to queue.');
     }
 
-    const res = await fetch('/api/jobs/batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...params,
-        tracks: validTracks,
-        format: params.format || settings.defaultFormat,
-        quality: params.quality || settings.defaultQuality,
-        filenameFormat: settings.filenameFormat,
-      }),
-    });
+    const fmt = params.format || settings.defaultFormat;
+    const q = params.quality || settings.defaultQuality;
 
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to queue playlist tracks.');
-    }
+    const newJobs: ClientQueueJob[] = validTracks.map((t, idx) => ({
+      id: crypto.randomUUID(),
+      source: 'youtube_playlist',
+      sourceUrl: t.url,
+      mediaId: t.id,
+      playlistId: params.playlistId,
+      playlistIndex: t.index || idx + 1,
+      playlistTitle: params.playlistTitle,
+      title: t.title,
+      artist: t.author,
+      thumbnail: t.thumbnail || '',
+      duration: t.duration || 0,
+      format: fmt,
+      quality: q,
+      status: 'queued',
+      stage: 'idle',
+      progress: 0,
+      createdAt: Date.now() + idx,
+      retryCount: 0,
+    }));
 
-    const data = await res.json();
-    if (Array.isArray(data.jobs)) {
-      setJobs((prev) => {
-        const ids = new Set(prev.map((j) => j.id));
-        const newJobs = data.jobs.filter((j: ClientQueueJob) => !ids.has(j.id));
-        return [...prev, ...newJobs];
-      });
-    }
+    setJobs((prev) => [...prev, ...newJobs]);
     addToast(`${validTracks.length} tracks added to queue`, 'success');
-  }, [settings.defaultFormat, settings.defaultQuality, settings.filenameFormat, addToast]);
+  }, [settings.defaultFormat, settings.defaultQuality, addToast]);
 
   const reorderJob = useCallback(async (id: string, direction: 'up' | 'down') => {
-    const res = await fetch(`/api/jobs/${id}/reorder`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ direction }),
+    setJobs((prev) => {
+      const idx = prev.findIndex((j) => j.id === id);
+      if (idx === -1) return prev;
+      const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+      if (prev[idx].status !== 'queued' || prev[targetIdx].status !== 'queued') return prev;
+
+      const next = [...prev];
+      const temp = next[idx];
+      next[idx] = next[targetIdx];
+      next[targetIdx] = temp;
+      return next;
     });
-    if (!res.ok) {
-      const err = await res.json();
-      addToast(err.error || 'Cannot reorder this item', 'error');
-    }
-  }, [addToast]);
+  }, []);
 
   const skipJob = useCallback(async (id: string) => {
-    await fetch(`/api/jobs/${id}/skip`, { method: 'POST' });
+    if (activeJobIdRef.current === id) {
+      activeAbortControllerRef.current?.abort();
+    }
+    setJobs((prev) =>
+      prev.map((j) => (j.id === id ? { ...j, status: 'skipped', stage: 'idle', error: undefined } : j))
+    );
     addToast('Track skipped, advancing to next', 'info');
   }, [addToast]);
 
   const cancelJob = useCallback(async (id: string) => {
-    await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+    if (activeJobIdRef.current === id) {
+      activeAbortControllerRef.current?.abort();
+    }
+    setJobs((prev) =>
+      prev.map((j) => (j.id === id ? { ...j, status: 'cancelled', stage: 'idle' } : j))
+    );
     addToast('Job cancelled', 'info');
   }, [addToast]);
 
   const removeJob = useCallback(async (id: string) => {
-    await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+    if (activeJobIdRef.current === id) {
+      activeAbortControllerRef.current?.abort();
+    }
+    setJobs((prev) => prev.filter((j) => j.id !== id));
     addToast('Item removed from queue', 'info');
   }, [addToast]);
 
   const retryJob = useCallback(async (id: string) => {
-    const res = await fetch(`/api/jobs/${id}/retry`, { method: 'POST' });
-    if (!res.ok) {
-      const err = await res.json();
-      addToast(err.error || 'Failed to retry job', 'error');
-    } else {
-      addToast('Job re-queued for processing', 'info');
-    }
+    hasUserTriggeredRef.current = true;
+    setJobs((prev) =>
+      prev.map((j) => {
+        if (j.id === id) {
+          return {
+            ...j,
+            status: 'queued',
+            stage: 'idle',
+            progress: 0,
+            error: undefined,
+            retryCount: (j.retryCount || 0) + 1,
+          };
+        }
+        return j;
+      })
+    );
+    addToast('Job re-queued for processing', 'info');
   }, [addToast]);
 
   const clearPendingQueue = useCallback(async () => {
-    for (const job of jobs) {
-      if (job.status === 'queued') {
-        await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' });
-      }
-    }
+    setJobs((prev) => prev.filter((j) => j.status !== 'queued'));
     addToast('Pending queue cleared', 'info');
-  }, [jobs, addToast]);
+  }, [addToast]);
 
-  // Derived job categories
+  const downloadTrackManually = useCallback((job: ClientQueueJob) => {
+    // Re-trigger download for completed job
+    addToast(`Re-processing download: ${job.title}`, 'info');
+    retryJob(job.id);
+  }, [addToast, retryJob]);
+
+  // Derived job lists
   const activeJob = jobs.find(
-    (j) => j.status === 'preparing' || j.status === 'fetching' || j.status === 'converting' || j.status === 'ready'
+    (j) => j.status === 'preparing' || j.status === 'fetching' || j.status === 'converting' || j.status === 'downloading'
   ) || null;
 
   const queuedJobs = jobs.filter((j) => j.status === 'queued');
@@ -539,7 +560,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   const failedJobs = jobs.filter((j) => j.status === 'failed');
   const skippedJobs = jobs.filter((j) => j.status === 'skipped');
 
-  // Unfinished queue summary for session recovery
+  // Session recovery summary
   const unfinishedQueueSummary = (!dismissedRecovery && jobs.length > 0 && (queuedJobs.length > 0 || activeJob))
     ? {
         completed: completedJobs.length,
