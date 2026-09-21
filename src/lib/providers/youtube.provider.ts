@@ -454,6 +454,12 @@ export class YouTubeProvider implements IMediaProvider {
       proc.stdout.on('data', (d) => (stdout += d.toString()));
       proc.stderr.on('data', (d) => (stderr += d.toString()));
 
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        if (timedOut) return;
+        reject(new Error(`Python or yt-dlp failed to execute: ${err.message}`));
+      });
+
       proc.on('close', (code) => {
         clearTimeout(timer);
         if (timedOut) return;
@@ -538,6 +544,12 @@ export class YouTubeProvider implements IMediaProvider {
 
       proc.stdout.on('data', (d) => (stdout += d.toString()));
       proc.stderr.on('data', (d) => (stderr += d.toString()));
+
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        if (timedOut) return;
+        reject(new Error(`Python or yt-dlp failed to execute: ${err.message}`));
+      });
 
       proc.on('close', (code) => {
         clearTimeout(timer);
@@ -659,6 +671,10 @@ export class YouTubeProvider implements IMediaProvider {
 
       proc.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Media fetcher (python/yt-dlp) failed to start: ${err.message}. Ensure python and yt-dlp are installed.`));
       });
 
       proc.on('close', (code) => {

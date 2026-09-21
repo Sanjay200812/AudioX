@@ -283,10 +283,31 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     markJobDone(job);
   }, [triggerBrowserDownload, addToast, markJobDone]);
 
-  // SSE Subscription for live queue updates
+  // SSE Subscription with HTTP snapshot fallback for live queue updates
   useEffect(() => {
     let eventSource: EventSource | null = null;
     let retryTimeout: NodeJS.Timeout | null = null;
+    let pollInterval: NodeJS.Timeout | null = null;
+
+    const fetchJobsSnapshot = async () => {
+      try {
+        const res = await fetch('/api/jobs');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.jobs)) {
+            setJobs(data.jobs);
+            data.jobs.forEach((j: ClientQueueJob) => {
+              if (j.status === 'ready' && j.downloadToken) {
+                handleJobReady(j);
+              }
+            });
+          }
+        }
+      } catch {}
+    };
+
+    // Initial snapshot on mount
+    fetchJobsSnapshot();
 
     const connectSSE = () => {
       eventSource = new EventSource('/api/jobs/stream');
@@ -324,15 +345,21 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         if (eventSource) {
           eventSource.close();
         }
+        // Immediately fetch snapshot if SSE dropped to update any pending states
+        fetchJobsSnapshot();
         retryTimeout = setTimeout(connectSSE, 3000);
       };
     };
 
     connectSSE();
 
+    // Fallback polling every 4 seconds to guarantee state sync even if SSE is interrupted
+    pollInterval = setInterval(fetchJobsSnapshot, 4000);
+
     return () => {
       if (eventSource) eventSource.close();
       if (retryTimeout) clearTimeout(retryTimeout);
+      if (pollInterval) clearInterval(pollInterval);
     };
   }, [handleJobReady, addToast]);
 
@@ -403,6 +430,13 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     }
 
     const data = await res.json();
+    if (data.job) {
+      setJobs((prev) => {
+        const exists = prev.some((j) => j.id === data.job.id);
+        if (exists) return prev;
+        return [...prev, data.job];
+      });
+    }
     addToast(`Added to queue: ${params.title}`, 'success');
 
     return data.job;
@@ -439,6 +473,13 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     }
 
     const data = await res.json();
+    if (Array.isArray(data.jobs)) {
+      setJobs((prev) => {
+        const ids = new Set(prev.map((j) => j.id));
+        const newJobs = data.jobs.filter((j: ClientQueueJob) => !ids.has(j.id));
+        return [...prev, ...newJobs];
+      });
+    }
     addToast(`${validTracks.length} tracks added to queue`, 'success');
   }, [settings.defaultFormat, settings.defaultQuality, settings.filenameFormat, addToast]);
 

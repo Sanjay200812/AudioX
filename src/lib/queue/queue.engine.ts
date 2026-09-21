@@ -282,6 +282,7 @@ export class QueueEngine extends EventEmitter {
     nextJob.startedAt = Date.now();
     nextJob.progress = 5;
 
+    console.log(`[queue:job:start] id=${nextJob.id} title="${nextJob.title}" format=${nextJob.format} quality=${nextJob.quality}`);
     this.emitEvent('job:started', nextJob);
     this.emitQueueUpdate();
 
@@ -295,6 +296,7 @@ export class QueueEngine extends EventEmitter {
       nextJob.status = 'fetching';
       nextJob.stage = 'fetching';
       nextJob.progress = 15;
+      console.log(`[queue:job:fetching] id=${nextJob.id} provider=${provider.name} url=${nextJob.sourceUrl}`);
       this.emitEvent('job:fetching', nextJob);
 
       const prepared = await provider.prepareMedia(
@@ -312,6 +314,7 @@ export class QueueEngine extends EventEmitter {
       nextJob.status = 'converting';
       nextJob.stage = 'converting';
       nextJob.progress = 50;
+      console.log(`[queue:job:converting] id=${nextJob.id} sourceFile=${prepared.sourceFilePath}`);
       this.emitEvent('job:converting', nextJob);
 
       // Generate clean sanitized filename
@@ -373,10 +376,14 @@ export class QueueEngine extends EventEmitter {
       nextJob.fileSize = stats.size;
       nextJob.temporaryFilePath = finalOutputPath;
 
+      const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
+      console.log(`[queue:job:ready] id=${nextJob.id} token=${downloadToken} size=${stats.size} duration=${duration}ms`);
+
       this.emitEvent('job:ready', nextJob);
       this.emitQueueUpdate();
     } catch (err: any) {
-      console.error(`Job ${nextJob.id} failed:`, err);
+      const duration = nextJob.startedAt ? Date.now() - nextJob.startedAt : 0;
+      console.error(`[queue:job:failed] id=${nextJob.id} duration=${duration}ms error:`, err?.message || err);
       nextJob.status = 'failed';
       nextJob.stage = 'idle';
       nextJob.error = err?.message || 'Processing failed.';

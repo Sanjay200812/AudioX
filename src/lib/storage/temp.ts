@@ -17,8 +17,16 @@ interface DownloadTokenRecord {
   expiresAt: number;
 }
 
-// In-memory token store (singleton)
-const tokenStore = new Map<string, DownloadTokenRecord>();
+declare global {
+  // eslint-disable-next-line no-var
+  var __audiox_token_store__: Map<string, DownloadTokenRecord> | undefined;
+}
+
+// In-memory token store attached to globalThis to survive Next.js dev & route bundling boundaries
+const tokenStore: Map<string, DownloadTokenRecord> =
+  globalThis.__audiox_token_store__ ?? new Map<string, DownloadTokenRecord>();
+
+globalThis.__audiox_token_store__ = tokenStore;
 
 export function getBaseTempDir(): string {
   if (!fs.existsSync(/*turbopackIgnore: true*/ BASE_TEMP_DIR)) {
@@ -54,7 +62,7 @@ export function registerDownloadToken(params: {
   const token = crypto.randomUUID();
   const stats = fs.statSync(params.filePath);
 
-  tokenStore.set(token, {
+  const record: DownloadTokenRecord = {
     token,
     filePath: params.filePath,
     fileName: params.fileName,
@@ -62,13 +70,47 @@ export function registerDownloadToken(params: {
     mimeType: params.mimeType,
     createdAt: Date.now(),
     expiresAt: Date.now() + FILE_EXPIRY_MS,
-  });
+  };
+
+  tokenStore.set(token, record);
+
+  // Write token.json in job workspace for multi-process and hot-reload resilience
+  try {
+    const metaPath = path.join(path.dirname(params.filePath), 'token.json');
+    fs.writeFileSync(metaPath, JSON.stringify(record), 'utf8');
+  } catch {}
 
   return token;
 }
 
 export function getDownloadRecord(token: string): DownloadTokenRecord | null {
-  const record = tokenStore.get(token);
+  let record = tokenStore.get(token);
+
+  // If not found in-memory, recover from job workspace disk
+  if (!record) {
+    try {
+      const baseDir = getBaseTempDir();
+      if (fs.existsSync(/*turbopackIgnore: true*/ baseDir)) {
+        const entries = fs.readdirSync(/*turbopackIgnore: true*/ baseDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const metaFile = path.join(baseDir, entry.name, 'token.json');
+            if (fs.existsSync(metaFile)) {
+              try {
+                const parsed: DownloadTokenRecord = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+                if (parsed && parsed.token === token) {
+                  record = parsed;
+                  tokenStore.set(token, record);
+                  break;
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
   if (!record) return null;
 
   if (Date.now() > record.expiresAt) {

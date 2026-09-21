@@ -37,6 +37,10 @@ export class InstagramProvider implements IMediaProvider {
       proc.stdout.on('data', (d) => (stdout += d.toString()));
       proc.stderr.on('data', (d) => (stderr += d.toString()));
 
+      proc.on('error', (err) => {
+        reject(new Error(`Python or yt-dlp failed to execute: ${err.message}`));
+      });
+
       proc.on('close', (code) => {
         if (code !== 0) {
           return reject(new Error(this.getInstagramErrorMessage(stderr)));
@@ -111,6 +115,10 @@ export class InstagramProvider implements IMediaProvider {
 
       proc.stderr.on('data', (chunk) => {
         stderr += chunk.toString();
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Media fetcher failed to start: ${err.message}`));
       });
 
       proc.on('close', (code) => {
