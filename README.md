@@ -24,14 +24,13 @@ AudioX is a fast, 100% public, mobile-friendly audio downloader. Its purpose is 
 
 ## Environment Variables
 
+All environment variables are optional with built-in fallbacks. None are required.
+
 | Variable | Description | Required | Scope |
 |---|---|---|---|
-| `WORKER_URL` | Optional dedicated worker URL (Railway / Render / VPS) | Optional | Server only |
-| `WORKER_SECRET` | Optional worker authentication secret | Optional | Server only |
-| `TEMP_DIR` | Working directory for audio processing | Optional (defaults to `/tmp/audiox`) | Server only |
-| `FILE_EXPIRY_MINUTES` | Retention time before temp file auto-cleanup | Optional (default: `30`) | Server only |
-| `MAX_FILE_SIZE_MB` | Maximum upload file limit in MB | Optional (default: `500`) | Server only |
-| `QUEUE_CONCURRENCY` | Sequential processing concurrency | Optional (default: `1`) | Server only |
+| `TEMP_DIR` | Working directory for scratch audio files (defaults to OS temp) | Optional | Server only |
+| `FILE_EXPIRY_MINUTES` | Retention time before temp file auto-cleanup (default: `30`) | Optional | Server only |
+| `MAX_FILE_SIZE_MB` | Maximum local media upload file limit in MB (default: `500`) | Optional | Server only |
 
 ---
 
