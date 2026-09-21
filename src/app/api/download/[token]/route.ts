@@ -1,47 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import { getDownloadRecord } from '@/lib/storage/temp';
+import { fetchWorkerDownload, isWorkerConfigured } from '@/lib/worker-client';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ token: string }> }
 ) {
   const { token } = await context.params;
+  const { searchParams } = new URL(req.url);
+  const jobId = searchParams.get('jobId');
 
   if (!token) {
     return NextResponse.json({ error: 'Download token is required.' }, { status: 400 });
   }
 
-  const record = getDownloadRecord(token);
-  if (!record) {
+  if (!jobId) {
+    return NextResponse.json({ error: 'jobId query parameter is required.' }, { status: 400 });
+  }
+
+  if (!isWorkerConfigured()) {
     return NextResponse.json(
-      { error: 'Download has expired or is invalid. Please process the media again.' },
-      { status: 404 }
+      { error: 'Audio processing service is temporarily unavailable.' },
+      { status: 503 }
     );
   }
 
-  const safeAsciiName = record.fileName.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '\\"');
-  const encodedFileName = encodeURIComponent(record.fileName)
-    .replace(/['()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())
-    .replace(/\*/g, '%2A');
+  try {
+    const workerRes = await fetchWorkerDownload(jobId, token);
 
-  if (record.filePath && fs.existsSync(record.filePath)) {
-    try {
-      const fileBuffer = fs.readFileSync(record.filePath);
-      return new Response(new Uint8Array(fileBuffer), {
-        status: 200,
-        headers: {
-          'Content-Type': record.mimeType,
-          'Content-Length': record.fileSize.toString(),
-          'Content-Disposition': `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodedFileName}`,
-          'Cache-Control': 'no-store, max-age=0',
-        },
-      });
-    } catch (err: any) {
-      console.error('File stream error:', err);
-      return NextResponse.json({ error: 'Failed to retrieve audio file.' }, { status: 500 });
+    if (!workerRes.ok) {
+      if (workerRes.status === 404 || workerRes.status === 410) {
+        return NextResponse.json(
+          { error: 'Audio download has expired or was cleaned up.' },
+          { status: 410 }
+        );
+      }
+      return NextResponse.json(
+        { error: 'Failed to retrieve audio from processing worker.' },
+        { status: workerRes.status }
+      );
     }
-  }
 
-  return NextResponse.json({ error: 'Audio file not found or expired.' }, { status: 404 });
+    const headers = new Headers();
+    headers.set('Content-Type', workerRes.headers.get('Content-Type') || 'audio/mpeg');
+    const contentLength = workerRes.headers.get('Content-Length');
+    if (contentLength) {
+      headers.set('Content-Length', contentLength);
+    }
+    const disposition = workerRes.headers.get('Content-Disposition');
+    if (disposition) {
+      headers.set('Content-Disposition', disposition);
+    }
+    headers.set('Cache-Control', 'no-store, max-age=0');
+
+    return new Response(workerRes.body, {
+      status: 200,
+      headers,
+    });
+  } catch (err: any) {
+    console.error('[api/download] Download stream error:', err);
+    return NextResponse.json(
+      { error: 'Audio processing service is temporarily unavailable.' },
+      { status: 503 }
+    );
+  }
 }

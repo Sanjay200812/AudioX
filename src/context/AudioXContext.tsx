@@ -219,113 +219,188 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
       )
     );
 
-    // Timeout safety: 60s maxDuration for Vercel
+    // Timeout safety: 10 minutes max for long worker jobs
     const timeoutId = setTimeout(() => {
       controller.abort('timeout');
-    }, 60000);
+    }, 600000);
 
     (async () => {
-      let progressTimer: NodeJS.Timeout | null = null;
       try {
-        // Smooth authentic progress updates while waiting for media
-        progressTimer = setInterval(() => {
-          setJobs((prev) =>
-            prev.map((j) => {
-              if (j.id !== nextJob.id) return j;
-              if (j.progress < 50) return { ...j, progress: j.progress + 6 };
-              if (j.progress < 85) return { ...j, stage: 'converting' as const, progress: j.progress + 4 };
-              return j;
-            })
-          );
-        }, 1200);
-
-        const res = await fetch('/api/media/process', {
+        // 1. Submit job to Railway worker via /api/jobs
+        const createRes = await fetch('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            url: nextJob.sourceUrl,
+            id: nextJob.id,
+            sourceUrl: nextJob.sourceUrl,
             videoId: nextJob.mediaId,
             format: nextJob.format,
             quality: nextJob.quality,
             title: nextJob.title,
             artist: nextJob.artist,
             duration: nextJob.duration,
+            thumbnail: nextJob.thumbnail,
           }),
           signal: controller.signal,
         });
 
-        if (progressTimer) clearInterval(progressTimer);
-        clearTimeout(timeoutId);
-
-        if (!res.ok) {
-          let errMessage = 'Unable to process this track.';
+        if (!createRes.ok) {
+          let errData: any = {};
           try {
-            const data = await res.json();
-            if (data.error) errMessage = data.error;
+            errData = await createRes.json();
           } catch {}
-          throw new Error(errMessage);
+          const isWorkerUnavail = errData.errorCode === 'WORKER_UNAVAILABLE' || createRes.status === 503;
+          const errorMsg = isWorkerUnavail
+            ? 'Audio processing service is temporarily unavailable.'
+            : errData.error || 'Failed to submit processing job.';
+
+          setJobs((prev) =>
+            prev.map((j) =>
+              j.id === nextJob.id
+                ? { ...j, status: 'failed', stage: 'idle', error: errorMsg, errorCode: errData.errorCode }
+                : j
+            )
+          );
+          addToast(errorMsg, 'error');
+          return;
         }
 
-        // Extract filename from response headers or fallback
-        const disposition = res.headers.get('Content-Disposition') || '';
-        let fileName = `${nextJob.title}.${nextJob.format}`;
-        const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-        if (match && match[1]) {
-          try {
-            fileName = decodeURIComponent(match[1]);
-          } catch {
-            fileName = match[1];
+        const createData = await createRes.json();
+        const remoteJobId = createData.jobId || nextJob.id;
+
+        // 2. Poll job status from Railway worker
+        let isDone = false;
+        while (!isDone) {
+          if (controller.signal.aborted) {
+            await fetch(`/api/jobs/${remoteJobId}/cancel`, { method: 'POST' }).catch(() => {});
+            break;
+          }
+
+          await new Promise((r) => setTimeout(r, 1000));
+          if (controller.signal.aborted) break;
+
+          const pollRes = await fetch(`/api/jobs/${remoteJobId}`, {
+            signal: controller.signal,
+            cache: 'no-store',
+          });
+
+          if (!pollRes.ok) {
+            continue;
+          }
+
+          const pollData = await pollRes.json();
+          const workerJob = pollData.job;
+          if (!workerJob) continue;
+
+          // Pass through authentic stages and percentages from worker
+          setJobs((prev) =>
+            prev.map((j) => {
+              if (j.id !== nextJob.id) return j;
+              return {
+                ...j,
+                stage: (workerJob.stage || j.stage) as any,
+                progress: typeof workerJob.progress === 'number' ? workerJob.progress : j.progress,
+              };
+            })
+          );
+
+          if (workerJob.status === 'ready' && workerJob.downloadToken) {
+            isDone = true;
+            clearTimeout(timeoutId);
+
+            // 3. Fetch completed audio stream
+            const dlRes = await fetch(`/api/download/${workerJob.downloadToken}?jobId=${remoteJobId}`, {
+              signal: controller.signal,
+              cache: 'no-store',
+            });
+
+            if (!dlRes.ok) {
+              throw new Error('Failed to retrieve converted audio file.');
+            }
+
+            const disposition = dlRes.headers.get('Content-Disposition') || '';
+            let fileName = workerJob.fileName || `${nextJob.title}.${nextJob.format}`;
+            const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+            if (match && match[1]) {
+              try {
+                fileName = decodeURIComponent(match[1]);
+              } catch {
+                fileName = match[1];
+              }
+            }
+
+            const blob = await dlRes.blob();
+
+            // Trigger immediate browser download
+            const blobUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+            // Mark complete and update state
+            const completedJob: ClientQueueJob = {
+              ...nextJob,
+              status: 'completed',
+              stage: 'ready',
+              progress: 100,
+              fileName,
+              fileSize: blob.size,
+              completedAt: Date.now(),
+            };
+
+            setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? completedJob : j)));
+            addToast(`Downloaded: ${nextJob.title}`, 'success');
+
+            // Persist to download history
+            if (settings.saveHistory) {
+              const historyItem: DownloadHistoryItem = {
+                id: nextJob.id,
+                mediaId: nextJob.mediaId || nextJob.id,
+                playlistId: nextJob.playlistId,
+                title: nextJob.title,
+                artist: nextJob.artist,
+                thumbnail: nextJob.thumbnail,
+                source: nextJob.source,
+                format: nextJob.format,
+                quality: nextJob.quality,
+                fileName,
+                fileSize: blob.size,
+                fileSizeFormatted: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
+                completedAt: Date.now(),
+              };
+              saveDownloadToIndexedDB(historyItem).catch(() => {});
+              setHistory((prev) => [historyItem, ...prev.filter((h) => h.id !== nextJob.id)]);
+            }
+          } else if (workerJob.status === 'failed') {
+            isDone = true;
+            clearTimeout(timeoutId);
+            const code = workerJob.errorCode;
+            const isPermanent = ['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'].includes(code);
+            const errorMsg = isPermanent
+              ? 'This media cannot be processed without access that AudioX does not have.'
+              : workerJob.errorMessage || 'Audio processing service encountered an error.';
+
+            setJobs((prev) =>
+              prev.map((j) =>
+                j.id === nextJob.id
+                  ? { ...j, status: 'failed', stage: 'idle', error: errorMsg, errorCode: code }
+                  : j
+              )
+            );
+            addToast(isPermanent ? errorMsg : `Failed: ${nextJob.title}`, 'error');
+          } else if (workerJob.status === 'cancelled') {
+            isDone = true;
+            clearTimeout(timeoutId);
+            setJobs((prev) =>
+              prev.map((j) => (j.id === nextJob.id ? { ...j, status: 'cancelled', stage: 'idle' } : j))
+            );
           }
         }
-
-        const blob = await res.blob();
-
-        // Trigger immediate browser download
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
-
-        // Mark complete and update state
-        const completedJob: ClientQueueJob = {
-          ...nextJob,
-          status: 'completed',
-          stage: 'ready',
-          progress: 100,
-          fileName,
-          fileSize: blob.size,
-          completedAt: Date.now(),
-        };
-
-        setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? completedJob : j)));
-        addToast(`Downloaded: ${nextJob.title}`, 'success');
-
-        // Persist to download history
-        if (settings.saveHistory) {
-          const historyItem: DownloadHistoryItem = {
-            id: nextJob.id,
-            mediaId: nextJob.mediaId || nextJob.id,
-            playlistId: nextJob.playlistId,
-            title: nextJob.title,
-            artist: nextJob.artist,
-            thumbnail: nextJob.thumbnail,
-            source: nextJob.source,
-            format: nextJob.format,
-            quality: nextJob.quality,
-            fileName,
-            fileSize: blob.size,
-            fileSizeFormatted: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
-            completedAt: Date.now(),
-          };
-          saveDownloadToIndexedDB(historyItem).catch(() => {});
-          setHistory((prev) => [historyItem, ...prev.filter((h) => h.id !== nextJob.id)]);
-        }
       } catch (err: any) {
-        if (progressTimer) clearInterval(progressTimer);
         clearTimeout(timeoutId);
 
         const isTimeout = controller.signal.aborted && controller.signal.reason === 'timeout';
@@ -347,6 +422,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
           addToast(`Failed: ${nextJob.title}`, 'error');
         }
       } finally {
+        clearTimeout(timeoutId);
         isProcessingRef.current = false;
         activeJobIdRef.current = null;
         activeAbortControllerRef.current = null;

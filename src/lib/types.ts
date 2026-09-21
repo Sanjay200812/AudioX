@@ -20,6 +20,9 @@ export type JobStatus =
 
 export type JobProgressStage =
   | 'idle'
+  | 'queued'
+  | 'resolving'
+  | 'downloading'
   | 'preparing'
   | 'fetching'
   | 'extracting'
@@ -57,6 +60,7 @@ export interface QueueJob {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  errorCode?: string;
   retryCount: number;
   downloadToken?: string;
   temporaryFilePath?: string;
@@ -85,6 +89,7 @@ export interface ClientQueueJob {
   startedAt?: number;
   completedAt?: number;
   error?: string;
+  errorCode?: string;
   retryCount: number;
   downloadToken?: string;
   fileName?: string;

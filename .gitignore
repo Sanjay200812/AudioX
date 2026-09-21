@@ -35,3 +35,8 @@ next-env.d.ts
 # temp storage
 .temp_audiox/
 .audiox_data/
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class

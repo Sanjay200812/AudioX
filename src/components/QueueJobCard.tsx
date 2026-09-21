@@ -155,7 +155,7 @@ export function QueueJobCard({ job, index, isFirst, isLast }: QueueJobCardProps)
           </div>
         )}
 
-        {isFailed && (
+        {isFailed && !['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'].includes(job.errorCode || '') && (
           <button
             type="button"
             onClick={() => retryJob(job.id)}
@@ -164,6 +164,12 @@ export function QueueJobCard({ job, index, isFirst, isLast }: QueueJobCardProps)
             <RotateCcw size={12} />
             Retry {job.retryCount > 0 ? `(Attempt ${job.retryCount + 1})` : ''}
           </button>
+        )}
+
+        {isFailed && ['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'].includes(job.errorCode || '') && (
+          <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/15 text-red-300 border border-red-500/20">
+            Access Restricted
+          </span>
         )}
 
         {/* Remove Action */}
