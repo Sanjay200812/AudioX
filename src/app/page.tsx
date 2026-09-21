@@ -24,12 +24,19 @@ export default function HomePage() {
     setSingleResult(null);
     setPlaylistResult(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 15000);
+
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url, forcePlaylist }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       const data = await res.json();
 
@@ -47,7 +54,12 @@ export default function HomePage() {
         throw new Error('No audio tracks detected at this link.');
       }
     } catch (err: any) {
-      setError(err.message || 'An unexpected error occurred while analyzing URL.');
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        setError('Analysis timed out. Please check your connection or link and retry.');
+      } else {
+        setError(err.message || 'An unexpected error occurred while analyzing URL.');
+      }
     } finally {
       setIsLoading(false);
     }

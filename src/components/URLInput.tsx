@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Sparkles, ArrowRight, X, AlertCircle } from 'lucide-react';
+import { Sparkles, ArrowRight, X, AlertCircle, RefreshCw, Clock } from 'lucide-react';
 import { validateMediaUrl } from '@/lib/security/ssrf';
 import { SourceBadge } from './SourceBadge';
 
@@ -16,6 +16,7 @@ export function URLInput({ onAnalyze, isLoading, error }: URLInputProps) {
   const [detectedType, setDetectedType] = useState<'youtube' | 'youtube_playlist' | null>(null);
   const [hasPlaylistParam, setHasPlaylistParam] = useState(false);
   const [loadingTextIndex, setLoadingTextIndex] = useState(0);
+  const [isTakingLonger, setIsTakingLonger] = useState(false);
 
   const loadingMessages = [
     'Analyzing YouTube media stream...',
@@ -27,12 +28,24 @@ export function URLInput({ onAnalyze, isLoading, error }: URLInputProps) {
   useEffect(() => {
     if (!isLoading) {
       setLoadingTextIndex(0);
+      setIsTakingLonger(false);
       return;
     }
+
+    // Message cycler
     const interval = setInterval(() => {
       setLoadingTextIndex((prev) => (prev + 1) % loadingMessages.length);
     }, 1800);
-    return () => clearInterval(interval);
+
+    // Timeout notice after 6 seconds
+    const longTimer = setTimeout(() => {
+      setIsTakingLonger(true);
+    }, 6000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(longTimer);
+    };
   }, [isLoading, loadingMessages.length]);
 
   // Real-time URL format & source detection
@@ -52,9 +65,14 @@ export function URLInput({ onAnalyze, isLoading, error }: URLInputProps) {
     }
   }, [inputUrl]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputUrl.trim() || isLoading) return;
+  const handleSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!inputUrl.trim()) return;
+    onAnalyze(inputUrl.trim());
+  };
+
+  const handleRetry = () => {
+    if (!inputUrl.trim()) return;
     onAnalyze(inputUrl.trim());
   };
 
@@ -146,7 +164,7 @@ export function URLInput({ onAnalyze, isLoading, error }: URLInputProps) {
 
         {/* Loading Animated Spectrum */}
         {isLoading && (
-          <div className="mt-4 p-4 rounded-xl glass-panel border border-indigo-500/20 flex flex-col items-center justify-center gap-3 animate-pulse">
+          <div className="mt-4 p-4 rounded-xl glass-panel border border-indigo-500/20 flex flex-col items-center justify-center gap-3">
             <div className="flex items-center gap-1.5 h-7">
               {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
                 <div
@@ -162,17 +180,45 @@ export function URLInput({ onAnalyze, isLoading, error }: URLInputProps) {
             <p className="text-xs font-medium text-zinc-300 tracking-wide">
               {loadingMessages[loadingTextIndex]}
             </p>
+
+            {/* Taking longer than expected notice + Retry option */}
+            {isTakingLonger && (
+              <div className="mt-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-between gap-3 w-full max-w-md animate-in fade-in duration-300">
+                <div className="flex items-center gap-2 text-xs text-amber-300">
+                  <Clock size={15} className="shrink-0 text-amber-400" />
+                  <span>Analysis is taking longer than expected.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-medium transition-colors border border-amber-500/30"
+                >
+                  <RefreshCw size={12} />
+                  <span>Retry</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Error message */}
+        {/* Error message with Retry button */}
         {error && !isLoading && (
-          <div className="mt-3 p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-start gap-2.5 text-xs text-red-300">
-            <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
-            <div className="flex-1 leading-relaxed">
-              <span className="font-semibold text-red-200">Unable to analyze media: </span>
-              {error}
+          <div className="mt-3 p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-between gap-3 text-xs text-red-300">
+            <div className="flex items-start gap-2.5 flex-1 leading-relaxed">
+              <AlertCircle size={16} className="text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-red-200">Unable to analyze media: </span>
+                {error}
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={handleRetry}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 font-medium text-xs border border-red-500/30 transition-colors shrink-0"
+            >
+              <RefreshCw size={12} />
+              <span>Retry</span>
+            </button>
           </div>
         )}
       </form>

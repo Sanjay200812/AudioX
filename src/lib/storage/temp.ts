@@ -21,7 +21,7 @@ interface DownloadTokenRecord {
 const tokenStore = new Map<string, DownloadTokenRecord>();
 
 export function getBaseTempDir(): string {
-  if (!fs.existsSync(BASE_TEMP_DIR)) {
+  if (!fs.existsSync(/*turbopackIgnore: true*/ BASE_TEMP_DIR)) {
     fs.mkdirSync(BASE_TEMP_DIR, { recursive: true });
   }
   return BASE_TEMP_DIR;
@@ -111,7 +111,7 @@ export function runStorageCleanup(): { cleanedTokens: number; cleanedDirs: numbe
   // 2. Clean orphaned directories older than expiry
   try {
     const baseDir = getBaseTempDir();
-    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    const entries = fs.readdirSync(/*turbopackIgnore: true*/ baseDir, { withFileTypes: true });
 
     for (const entry of entries) {
       if (entry.isDirectory()) {

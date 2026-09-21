@@ -38,6 +38,15 @@ export function getSupabaseServerClient(): SupabaseClient | null {
         persistSession: false,
         autoRefreshToken: false,
       },
+      global: {
+        fetch: (input, init) => {
+          const timeoutSignal = AbortSignal.timeout(4000);
+          const signal = init?.signal
+            ? AbortSignal.any([init.signal, timeoutSignal])
+            : timeoutSignal;
+          return fetch(input, { ...init, signal });
+        },
+      },
     });
     return cachedClient;
   } catch (err) {
