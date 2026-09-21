@@ -1,6 +1,9 @@
 {
   "functions": {
-    "api/media/process.py": {
+    "api/raw.py": {
+      "maxDuration": 60
+    },
+    "src/app/api/media/process/route.ts": {
       "maxDuration": 60
     }
   }

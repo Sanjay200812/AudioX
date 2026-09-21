@@ -1,6 +1,8 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import ffmpegPath from 'ffmpeg-static';
 import { AudioFormat, AudioQuality } from '../types';
 
 export interface MetadataOptions {
@@ -21,11 +23,77 @@ export interface ConvertOptions {
   onProgress?: (progressPercent: number) => void;
 }
 
+export function resolveFfmpegBinary(): string | null {
+  // 1. Direct path check if ffmpegPath is already valid on disk
+  if (ffmpegPath && fs.existsSync(ffmpegPath)) {
+    return ffmpegPath;
+  }
+
+  const isWin = process.platform === 'win32';
+  const binaryName = isWin ? 'ffmpeg.exe' : 'ffmpeg';
+
+  // 2. Resolve relative to process.cwd() (handles Next.js Turbopack / Webpack \ROOT\ mock)
+  const candidatePaths = [
+    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', binaryName),
+    typeof ffmpegPath === 'string'
+      ? ffmpegPath.replace(/^[\\/]ROOT[\\/]/, `${process.cwd()}${path.sep}`).replace(/^[\\/]ROOT/, process.cwd())
+      : '',
+    path.join(process.cwd(), '.next', 'server', 'node_modules', 'ffmpeg-static', binaryName),
+    path.join('/var/task', 'node_modules', 'ffmpeg-static', binaryName),
+    path.join(os.tmpdir(), binaryName),
+  ].filter(Boolean);
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(/*turbopackIgnore: true*/ candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the bundled ffmpeg-static binary path.
+ * Ensures executable permissions on Unix/Linux systems.
+ */
+export function getFfmpegPath(): string {
+  const binary = resolveFfmpegBinary();
+  const isResolved = Boolean(binary && fs.existsSync(/*turbopackIgnore: true*/ binary));
+  console.log('[ffmpeg] FFmpeg path resolved:', isResolved ? 'yes' : 'no');
+
+  if (!isResolved || !binary) {
+    console.error('[ffmpeg] FFmpeg binary not found. Tested paths around:', process.cwd());
+    throw new Error('FFmpeg binary is unavailable in this serverless runtime.');
+  }
+
+  // Ensure binary has execution permissions on Linux/macOS
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(/*turbopackIgnore: true*/ binary, 0o755);
+    } catch (e: any) {
+      // Best-effort chmod, ignore if filesystem is read-only
+    }
+  }
+
+  return binary;
+}
+
+/**
+ * Checks whether the bundled FFmpeg binary is accessible and executable.
+ */
 export function isFfmpegAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', ['-version']);
-    proc.on('error', () => resolve(false));
-    proc.on('close', (code) => resolve(code === 0));
+    try {
+      const bin = getFfmpegPath();
+      const proc = spawn(/*turbopackIgnore: true*/ bin, ['-version']);
+      proc.on('error', (err) => {
+        console.error('[ffmpeg] isFfmpegAvailable error:', err.message);
+        resolve(false);
+      });
+      proc.on('close', (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
   });
 }
 
@@ -43,7 +111,7 @@ function mapBitrate(quality: AudioQuality): string {
 }
 
 /**
- * Convert audio or video input file to target audio format using FFmpeg.
+ * Convert audio or video input file to target audio format using bundled FFmpeg.
  * All arguments are passed as an array to prevent command injection.
  */
 export function convertAudio(options: ConvertOptions): Promise<{ outputPath: string; fileSize: number }> {
@@ -52,6 +120,13 @@ export function convertAudio(options: ConvertOptions): Promise<{ outputPath: str
 
     if (!fs.existsSync(inputPath)) {
       return reject(new Error(`Input file not found: ${inputPath}`));
+    }
+
+    let bin: string;
+    try {
+      bin = getFfmpegPath();
+    } catch (err: any) {
+      return reject(err);
     }
 
     const bitrate = mapBitrate(quality);
@@ -68,7 +143,14 @@ export function convertAudio(options: ConvertOptions): Promise<{ outputPath: str
     if (format === 'mp3') {
       args.push('-c:a', 'libmp3lame', '-b:a', bitrate);
       if (hasCover) {
-        args.push('-map', '0:a:0', '-map', '1:0', '-c:v', 'copy', '-id3v2_version', '3', '-metadata:s:v', 'title="Album cover"', '-metadata:s:v', 'comment="Cover (front)"');
+        args.push(
+          '-map', '0:a:0',
+          '-map', '1:0',
+          '-c:v', 'copy',
+          '-id3v2_version', '3',
+          '-metadata:s:v', 'title="Album cover"',
+          '-metadata:s:v', 'comment="Cover (front)"'
+        );
       }
     } else {
       // m4a / aac
@@ -94,7 +176,7 @@ export function convertAudio(options: ConvertOptions): Promise<{ outputPath: str
 
     args.push(outputPath);
 
-    const proc = spawn('ffmpeg', args);
+    const proc = spawn(/*turbopackIgnore: true*/ bin, args);
 
     let errorLog = '';
 
@@ -103,27 +185,27 @@ export function convertAudio(options: ConvertOptions): Promise<{ outputPath: str
       errorLog += text;
 
       // Simple time progression parsing if duration is present
-      // Example ffmpeg output: time=00:01:23.45
       const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}\.\d+)/);
       if (timeMatch && onProgress) {
         const hours = parseFloat(timeMatch[1]);
         const minutes = parseFloat(timeMatch[2]);
         const seconds = parseFloat(timeMatch[3]);
         const currentSeconds = hours * 3600 + minutes * 60 + seconds;
-        // If we know estimated duration, could compute percentage, else invoke callback
         if (currentSeconds > 0) {
-          onProgress(Math.min(95, Math.floor(currentSeconds * 5))); // progressive estimate
+          onProgress(Math.min(95, Math.floor(currentSeconds * 5)));
         }
       }
     });
 
     proc.on('error', (err) => {
+      console.error('[ffmpeg] spawn error:', err);
       reject(new Error(`FFmpeg process failed to start: ${err.message}`));
     });
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        return reject(new Error(`FFmpeg conversion failed (code ${code}): ${errorLog.slice(-500)}`));
+        console.error('[ffmpeg] process exited with code', code, 'stderr:', errorLog.slice(-500));
+        return reject(new Error(`FFmpeg conversion failed (code ${code})`));
       }
 
       if (!fs.existsSync(outputPath)) {
