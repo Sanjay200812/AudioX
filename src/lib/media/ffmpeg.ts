@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -52,49 +52,74 @@ export function resolveFfmpegBinary(): string | null {
   return null;
 }
 
-/**
- * Resolves the bundled ffmpeg-static binary path.
- * Ensures executable permissions on Unix/Linux systems.
- */
-export function getFfmpegPath(): string {
-  const binary = resolveFfmpegBinary();
-  const isResolved = Boolean(binary && fs.existsSync(/*turbopackIgnore: true*/ binary));
-  console.log('[ffmpeg] FFmpeg path resolved:', isResolved ? 'yes' : 'no');
+export interface FfmpegHealth {
+  resolved: boolean;
+  pathExists: boolean;
+  versionOk: boolean;
+  binaryPath?: string;
+  error?: string;
+}
 
-  if (!isResolved || !binary) {
-    console.error('[ffmpeg] FFmpeg binary not found. Tested paths around:', process.cwd());
-    throw new Error('FFmpeg binary is unavailable in this serverless runtime.');
+/**
+ * Validates the bundled static FFmpeg binary and performs an execution health check.
+ * Logs exact diagnostic flags:
+ * FFmpeg resolved: true/false
+ * FFmpeg path exists: true/false
+ */
+export function checkFfmpegHealth(): FfmpegHealth {
+  const binary = resolveFfmpegBinary();
+  const resolved = Boolean(binary);
+  const pathExists = Boolean(binary && fs.existsSync(/*turbopackIgnore: true*/ binary));
+
+  console.log(`FFmpeg resolved: ${resolved}`);
+  console.log(`FFmpeg path exists: ${pathExists}`);
+
+  if (!resolved || !pathExists || !binary) {
+    console.error('FFMPEG_BINARY_MISSING');
+    return { resolved, pathExists, versionOk: false, error: 'FFMPEG_BINARY_MISSING' };
   }
 
-  // Ensure binary has execution permissions on Linux/macOS
+  // Ensure execution permissions on Unix/Linux
   if (process.platform !== 'win32') {
     try {
       fs.chmodSync(/*turbopackIgnore: true*/ binary, 0o755);
-    } catch (e: any) {
-      // Best-effort chmod, ignore if filesystem is read-only
-    }
+    } catch {}
   }
 
-  return binary;
+  try {
+    const res = spawnSync(/*turbopackIgnore: true*/ binary, ['-version'], {
+      encoding: 'utf8',
+      timeout: 4000,
+    });
+    const versionOk = res.status === 0;
+    if (!versionOk) {
+      console.error('FFMPEG_BINARY_MISSING: version check returned non-zero code', res.status);
+      return { resolved, pathExists, versionOk: false, binaryPath: binary, error: 'FFMPEG_BINARY_MISSING' };
+    }
+    return { resolved, pathExists, versionOk: true, binaryPath: binary };
+  } catch (err: any) {
+    console.error('FFMPEG_BINARY_MISSING: spawn failed', err?.message);
+    return { resolved, pathExists, versionOk: false, binaryPath: binary, error: 'FFMPEG_BINARY_MISSING' };
+  }
+}
+
+/**
+ * Resolves the bundled ffmpeg-static binary path.
+ */
+export function getFfmpegPath(): string {
+  const health = checkFfmpegHealth();
+  if (!health.versionOk || !health.binaryPath) {
+    throw new Error('FFMPEG_BINARY_MISSING');
+  }
+  return health.binaryPath;
 }
 
 /**
  * Checks whether the bundled FFmpeg binary is accessible and executable.
  */
 export function isFfmpegAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    try {
-      const bin = getFfmpegPath();
-      const proc = spawn(/*turbopackIgnore: true*/ bin, ['-version']);
-      proc.on('error', (err) => {
-        console.error('[ffmpeg] isFfmpegAvailable error:', err.message);
-        resolve(false);
-      });
-      proc.on('close', (code) => resolve(code === 0));
-    } catch {
-      resolve(false);
-    }
-  });
+  const health = checkFfmpegHealth();
+  return Promise.resolve(health.versionOk);
 }
 
 function mapBitrate(quality: AudioQuality): string {

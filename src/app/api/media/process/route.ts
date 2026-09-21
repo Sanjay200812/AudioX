@@ -3,8 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import ffmpegPath from 'ffmpeg-static';
-import { convertAudio, getFfmpegPath, resolveFfmpegBinary } from '@/lib/media/ffmpeg';
+import { convertAudio, checkFfmpegHealth } from '@/lib/media/ffmpeg';
 import { AudioFormat, AudioQuality } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -15,9 +14,14 @@ function sanitizeFilename(name: string): string {
   return cleaned || 'audio_track';
 }
 
-function getRawApiUrl(req: NextRequest, targetUrl: string): string {
+function getRawApiUrl(req: NextRequest, targetUrl: string, targetFormat: string, videoId?: string): string {
+  const query = new URLSearchParams();
+  if (targetUrl) query.set('url', targetUrl);
+  if (targetFormat) query.set('format', targetFormat);
+  if (videoId) query.set('videoId', videoId);
+
   if (process.env.NODE_ENV === 'development') {
-    return `http://127.0.0.1:8000/api/raw?url=${encodeURIComponent(targetUrl)}`;
+    return `http://127.0.0.1:8000/api/raw?${query.toString()}`;
   }
 
   const host =
@@ -27,30 +31,37 @@ function getRawApiUrl(req: NextRequest, targetUrl: string): string {
     'localhost:3000';
 
   const protocol = host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https';
-  return `${protocol}://${host}/api/raw?url=${encodeURIComponent(targetUrl)}`;
+  return `${protocol}://${host}/api/raw?${query.toString()}`;
 }
 
 async function handleProcessRequest(req: NextRequest, params: {
   url: string;
+  videoId?: string;
   format?: string;
   quality?: string;
   title?: string;
+  artist?: string;
+  duration?: number;
 }) {
-  const { url } = params;
-  if (!url) {
-    return NextResponse.json({ error: 'Media URL is required.' }, { status: 400 });
+  const { url, videoId } = params;
+  if (!url && !videoId) {
+    return NextResponse.json({ error: 'Media URL or videoId is required.' }, { status: 400 });
   }
 
   const format: AudioFormat = params.format?.toLowerCase() === 'm4a' ? 'm4a' : 'mp3';
   const quality: AudioQuality = (params.quality?.toLowerCase() as AudioQuality) || 'high';
   const customTitle = params.title;
+  const customArtist = params.artist;
 
-  // Diagnostic log for FFmpeg resolution
-  const resolvedBinary = resolveFfmpegBinary();
-  const isFfmpegResolved = Boolean(resolvedBinary && fs.existsSync(resolvedBinary));
-  console.log('[media-process] FFmpeg path resolved:', isFfmpegResolved ? 'yes' : 'no');
-  if (!isFfmpegResolved && format === 'mp3') {
-    console.error('[media-process] FFmpeg binary not found at path:', ffmpegPath);
+  // FFmpeg health verification before conversion
+  if (format === 'mp3') {
+    const health = checkFfmpegHealth();
+    if (!health.versionOk) {
+      return NextResponse.json(
+        { error: 'MP3 processing is temporarily unavailable.' },
+        { status: 503 }
+      );
+    }
   }
 
   const jobId = crypto.randomUUID();
@@ -59,8 +70,8 @@ async function handleProcessRequest(req: NextRequest, params: {
 
   try {
     // 1. Resolve raw audio source from Python extractor
-    const rawApiUrl = getRawApiUrl(req, url);
-    console.log(`[media-process] Fetching raw media from extractor: format=${format} quality=${quality}`);
+    const rawApiUrl = getRawApiUrl(req, url, format, videoId);
+    console.log(`[media-process] Fetching raw media from extractor: ${rawApiUrl}`);
 
     const rawRes = await fetch(rawApiUrl, {
       method: 'GET',
@@ -72,7 +83,7 @@ async function handleProcessRequest(req: NextRequest, params: {
           ? { 'x-vercel-protection-bypass': req.headers.get('x-vercel-protection-bypass')! }
           : {}),
       },
-      signal: req.signal,
+      cache: 'no-store',
     });
 
     if (!rawRes.ok) {
@@ -118,7 +129,7 @@ async function handleProcessRequest(req: NextRequest, params: {
         quality,
         metadata: {
           title: customTitle || rawTitle,
-          artist: rawArtist,
+          artist: customArtist || rawArtist,
         },
       });
 
@@ -132,9 +143,10 @@ async function handleProcessRequest(req: NextRequest, params: {
 
     const stat = fs.statSync(/*turbopackIgnore: true*/ finalFilePath);
     const resolvedTitle = customTitle || rawTitle;
+    const resolvedArtist = customArtist || rawArtist;
     const fullFileName =
-      rawArtist && !resolvedTitle.includes(rawArtist)
-        ? `${rawArtist} - ${resolvedTitle}`
+      resolvedArtist && !resolvedTitle.includes(resolvedArtist)
+        ? `${resolvedArtist} - ${resolvedTitle}`
         : resolvedTitle;
     const cleanName = `${sanitizeFilename(fullFileName)}.${format}`;
 
@@ -156,7 +168,7 @@ async function handleProcessRequest(req: NextRequest, params: {
       },
     });
   } catch (err: any) {
-    console.error('[media-process] Processing error:', err?.message || err);
+    console.error('[media-process] Processing error:', err?.message || err, err?.cause);
     const userMessage =
       format === 'mp3'
         ? 'MP3 conversion failed. Please try again or download as M4A.'
@@ -182,9 +194,12 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     return handleProcessRequest(req, {
       url: body.url || body.sourceUrl,
+      videoId: body.videoId || body.mediaId,
       format: body.format,
       quality: body.quality,
       title: body.title,
+      artist: body.artist,
+      duration: body.duration,
     });
   } catch {
     return NextResponse.json({ error: 'Invalid JSON payload.' }, { status: 400 });
@@ -195,8 +210,10 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   return handleProcessRequest(req, {
     url: searchParams.get('url') || '',
+    videoId: searchParams.get('videoId') || searchParams.get('mediaId') || undefined,
     format: searchParams.get('format') || undefined,
     quality: searchParams.get('quality') || undefined,
     title: searchParams.get('title') || undefined,
+    artist: searchParams.get('artist') || undefined,
   });
 }

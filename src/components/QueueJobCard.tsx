@@ -159,11 +159,10 @@ export function QueueJobCard({ job, index, isFirst, isLast }: QueueJobCardProps)
           <button
             type="button"
             onClick={() => retryJob(job.id)}
-            disabled={job.retryCount >= 2}
-            className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-300 hover:bg-red-500/25 border border-red-500/30 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-red-500/15 text-red-300 hover:bg-red-500/25 border border-red-500/30 transition-colors flex items-center gap-1 cursor-pointer"
           >
             <RotateCcw size={12} />
-            Retry {job.retryCount > 0 ? `(${job.retryCount}/2)` : ''}
+            Retry {job.retryCount > 0 ? `(Attempt ${job.retryCount + 1})` : ''}
           </button>
         )}
 

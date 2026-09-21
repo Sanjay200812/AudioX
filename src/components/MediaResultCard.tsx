@@ -140,7 +140,7 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
 
   // 1. Single Video Handlers
   const executeSingleJob = async (action: 'queue' | 'download') => {
-    if (!metadata) return;
+    if (!metadata || isSubmitting) return;
     setIsSubmitting(true);
     try {
       await addSingleJob({
@@ -194,7 +194,7 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
 
   // 2. Playlist / Selected Tracks Batch Processing
   const executePlaylistBatch = async (tracksToProcess: PlaylistTrack[], action: 'queue' | 'download') => {
-    if (!playlist || tracksToProcess.length === 0) return;
+    if (!playlist || isSubmitting || tracksToProcess.length === 0) return;
     setIsSubmitting(true);
     try {
       await addPlaylistBatch({

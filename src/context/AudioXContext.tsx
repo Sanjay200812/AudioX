@@ -96,6 +96,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   const activeAbortControllerRef = useRef<AbortController | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
   const hasUserTriggeredRef = useRef(true);
+  const retryingJobIdsRef = useRef<Set<string>>(new Set());
 
   const addToast = useCallback((message: string, type: 'info' | 'success' | 'error' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -243,9 +244,12 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: nextJob.sourceUrl,
+            videoId: nextJob.mediaId,
             format: nextJob.format,
             quality: nextJob.quality,
             title: nextJob.title,
+            artist: nextJob.artist,
+            duration: nextJob.duration,
           }),
           signal: controller.signal,
         });
@@ -420,6 +424,28 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     };
 
     setJobs((prev) => {
+      // Check if this track is already in the queue!
+      const existingIdx = prev.findIndex(
+        (j) => (params.mediaId && j.mediaId === params.mediaId) || j.sourceUrl === params.sourceUrl
+      );
+      if (existingIdx !== -1) {
+        // Reuse and reset the existing track instead of creating a duplicate row!
+        const existing = prev[existingIdx];
+        const updated: ClientQueueJob = {
+          ...existing,
+          format: params.format || existing.format,
+          quality: params.quality || existing.quality,
+          status: 'queued',
+          stage: 'idle',
+          progress: 0,
+          error: undefined,
+          retryCount: (existing.retryCount || 0) + 1,
+        };
+        const next = [...prev];
+        next[existingIdx] = updated;
+        return next;
+      }
+
       if (params.startImmediately) {
         // Place at front of queued items
         const activeOrDone = prev.filter((j) => j.status !== 'queued');
@@ -520,23 +546,32 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   }, [addToast]);
 
   const retryJob = useCallback(async (id: string) => {
-    hasUserTriggeredRef.current = true;
-    setJobs((prev) =>
-      prev.map((j) => {
-        if (j.id === id) {
-          return {
-            ...j,
-            status: 'queued',
-            stage: 'idle',
-            progress: 0,
-            error: undefined,
-            retryCount: (j.retryCount || 0) + 1,
-          };
-        }
-        return j;
-      })
-    );
-    addToast('Job re-queued for processing', 'info');
+    if (retryingJobIdsRef.current.has(id)) return;
+    retryingJobIdsRef.current.add(id);
+
+    try {
+      hasUserTriggeredRef.current = true;
+      setJobs((prev) =>
+        prev.map((j) => {
+          if (j.id === id) {
+            return {
+              ...j,
+              status: 'queued',
+              stage: 'idle',
+              progress: 0,
+              error: undefined,
+              retryCount: (j.retryCount || 0) + 1,
+            };
+          }
+          return j;
+        })
+      );
+      addToast('Track re-queued for processing', 'info');
+    } finally {
+      setTimeout(() => {
+        retryingJobIdsRef.current.delete(id);
+      }, 600);
+    }
   }, [addToast]);
 
   const clearPendingQueue = useCallback(async () => {
