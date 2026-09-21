@@ -173,15 +173,7 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
     }
   };
 
-  const handleAddSingleToQueue = () => {
-    if (!metadata) return;
-    if (isDownloadedSync(metadata.id, format)) {
-      setSingleDuplicateModal({ open: true, action: 'queue' });
-      return;
-    }
-    executeSingleJob('queue');
-  };
-
+  // 1. Single Video Explicit Handlers
   const handleDownloadSingleNow = () => {
     if (!metadata) return;
     if (isDownloadedSync(metadata.id, format)) {
@@ -191,7 +183,16 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
     executeSingleJob('download');
   };
 
-  // 2. Playlist / Selected Tracks Handlers
+  const handleAddSingleToQueue = () => {
+    if (!metadata) return;
+    if (isDownloadedSync(metadata.id, format)) {
+      setSingleDuplicateModal({ open: true, action: 'queue' });
+      return;
+    }
+    executeSingleJob('queue');
+  };
+
+  // 2. Playlist / Selected Tracks Batch Processing
   const executePlaylistBatch = async (tracksToProcess: PlaylistTrack[], action: 'queue' | 'download') => {
     if (!playlist || tracksToProcess.length === 0) return;
     setIsSubmitting(true);
@@ -207,7 +208,7 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
       setIsSuccess(true);
       setSuccessText(
         action === 'download'
-          ? `Processing ${tracksToProcess.length} Tracks...`
+          ? `Downloading ${tracksToProcess.length} Tracks...`
           : `${tracksToProcess.length} Tracks Queued`
       );
       setTimeout(() => {
@@ -260,12 +261,30 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
     executePlaylistBatch(tracksToProcess, action);
   };
 
-  const handleAddPlaylistToQueue = () => {
-    initiatePlaylistProcessing(selectedCount > 0 ? selectedTracks : availableTracks, 'queue');
+  // 3. Full Playlist Explicit Handlers
+  const handleDownloadPlaylistAll = () => {
+    initiatePlaylistProcessing(availableTracks, 'download');
   };
 
-  const handleDownloadPlaylistNow = () => {
-    initiatePlaylistProcessing(selectedCount > 0 ? selectedTracks : availableTracks, 'download');
+  const handleAddPlaylistAllToQueue = () => {
+    initiatePlaylistProcessing(availableTracks, 'queue');
+  };
+
+  // 4. Selected Tracks Explicit Handlers
+  const handleDownloadSelectedTracks = () => {
+    if (selectedTracks.length === 0) {
+      addToast('Please select at least one track to download', 'error');
+      return;
+    }
+    initiatePlaylistProcessing(selectedTracks, 'download');
+  };
+
+  const handleAddSelectedTracksToQueue = () => {
+    if (selectedTracks.length === 0) {
+      addToast('Please select at least one track to queue', 'error');
+      return;
+    }
+    initiatePlaylistProcessing(selectedTracks, 'queue');
   };
 
   // Thumbnail & Title resolution
@@ -372,17 +391,27 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
         </div>
       </div>
 
-      {/* Primary Action Buttons */}
+      {/* Primary Action Buttons: LEFT is Download Now, RIGHT is Add to Queue */}
       <div className="mt-5 flex items-center gap-3">
+        {/* LEFT BUTTON: Download Now / Download All N / Download X */}
         <button
           type="button"
-          onClick={isPlaylist ? handleAddPlaylistToQueue : handleAddSingleToQueue}
+          onClick={() => {
+            if (!isPlaylist) {
+              handleDownloadSingleNow();
+            } else if (selectedCount === availableTracks.length) {
+              handleDownloadPlaylistAll();
+            } else {
+              handleDownloadSelectedTracks();
+            }
+          }}
           disabled={isSubmitting || isSuccess || (isPlaylist && selectedCount === 0)}
           className={`flex-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm transition-all duration-200 cursor-pointer shadow-lg ${
             isSuccess
               ? 'bg-emerald-500 text-white'
-              : 'gradient-accent text-white hover:opacity-95 active:scale-[0.98] shadow-indigo-600/25 disabled:opacity-50 disabled:pointer-events-none'
+              : 'gradient-accent text-white hover:opacity-95 active:scale-[0.98] shadow-indigo-600/25 disabled:opacity-40 disabled:pointer-events-none'
           }`}
+          title={isPlaylist ? `Download ${selectedCount} tracks sequentially` : 'Download audio now'}
         >
           {isSuccess ? (
             <>
@@ -391,35 +420,41 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
             </>
           ) : (
             <>
-              <Plus size={16} />
+              <Download size={16} />
               <span>
                 {isPlaylist
                   ? selectedCount === availableTracks.length
-                    ? `Add ${availableTracks.length} Tracks to Queue`
-                    : `Add ${selectedCount} to Queue`
-                  : 'Add to Queue'}
+                    ? `Download All ${availableTracks.length}`
+                    : `Download ${selectedCount}`
+                  : 'Download Now'}
               </span>
             </>
           )}
         </button>
 
+        {/* RIGHT BUTTON: Add to Queue / Add N Tracks to Queue / Add X to Queue */}
         <button
           type="button"
-          onClick={isPlaylist ? handleDownloadPlaylistNow : handleDownloadSingleNow}
+          onClick={() => {
+            if (!isPlaylist) {
+              handleAddSingleToQueue();
+            } else if (selectedCount === availableTracks.length) {
+              handleAddPlaylistAllToQueue();
+            } else {
+              handleAddSelectedTracksToQueue();
+            }
+          }}
           disabled={isSubmitting || isSuccess || (isPlaylist && selectedCount === 0)}
-          className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold text-sm text-zinc-200 bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
-          title="Process sequentially via queue and save"
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold text-sm text-zinc-200 bg-white/[0.08] hover:bg-white/[0.14] hover:text-white border border-white/[0.1] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:pointer-events-none shadow-sm"
+          title={isPlaylist ? `Add ${selectedCount} tracks to queue` : 'Add track to queue'}
         >
-          <Download size={16} />
-          <span className="hidden sm:inline">
+          <Plus size={16} />
+          <span>
             {isPlaylist
               ? selectedCount === availableTracks.length
-                ? `Download All ${availableTracks.length}`
-                : `Download ${selectedCount}`
-              : 'Download Now'}
-          </span>
-          <span className="sm:hidden">
-            {isPlaylist ? `Download (${selectedCount})` : 'Download'}
+                ? `Add ${availableTracks.length} Tracks to Queue`
+                : `Add ${selectedCount} to Queue`
+              : 'Add to Queue'}
           </span>
         </button>
       </div>
@@ -588,22 +623,34 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
             </span>
 
             <div className="flex items-center gap-2">
+              {/* LEFT: Download */}
               <button
                 type="button"
-                onClick={handleAddPlaylistToQueue}
+                onClick={selectedCount === availableTracks.length ? handleDownloadPlaylistAll : handleDownloadSelectedTracks}
                 disabled={isSubmitting || selectedCount === 0}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer disabled:opacity-50"
+                className="px-3.5 py-2 rounded-lg text-xs font-semibold gradient-accent text-white hover:opacity-95 shadow-md shadow-indigo-600/20 transition-all cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1.5"
               >
-                Add {selectedCount} to Queue
+                <Download size={13} />
+                <span>
+                  {selectedCount === availableTracks.length
+                    ? `Download All ${availableTracks.length}`
+                    : `Download ${selectedCount}`}
+                </span>
               </button>
 
+              {/* RIGHT: Add to Queue */}
               <button
                 type="button"
-                onClick={handleDownloadPlaylistNow}
+                onClick={selectedCount === availableTracks.length ? handleAddPlaylistAllToQueue : handleAddSelectedTracksToQueue}
                 disabled={isSubmitting || selectedCount === 0}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/[0.08] hover:bg-white/[0.14] text-white transition-colors cursor-pointer disabled:opacity-50"
+                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-white/[0.08] hover:bg-white/[0.14] text-zinc-200 hover:text-white border border-white/[0.08] transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none flex items-center gap-1.5"
               >
-                Download {selectedCount}
+                <Plus size={13} />
+                <span>
+                  {selectedCount === availableTracks.length
+                    ? `Add ${availableTracks.length} to Queue`
+                    : `Add ${selectedCount} to Queue`}
+                </span>
               </button>
             </div>
           </div>

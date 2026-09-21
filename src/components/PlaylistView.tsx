@@ -7,6 +7,7 @@ import { SourceBadge } from './SourceBadge';
 import { FormatSelector } from './FormatSelector';
 import { QualitySelector } from './QualitySelector';
 import { useAudioX } from '@/context/AudioXContext';
+import { useRouter } from 'next/navigation';
 import {
   ListMusic,
   Clock,
@@ -16,6 +17,7 @@ import {
   Plus,
   Trash2,
   CheckCircle2,
+  Download,
 } from 'lucide-react';
 
 interface PlaylistViewProps {
@@ -75,6 +77,34 @@ export function PlaylistView({ playlist, onDone }: PlaylistViewProps) {
     });
   };
 
+  const router = useRouter();
+
+  const handleDownloadSelected = async () => {
+    const selectedTracks = playlist.tracks.filter((t) => selectedIndices.has(t.index));
+    if (selectedTracks.length === 0) return;
+
+    setIsSubmitting(true);
+    try {
+      await addPlaylistBatch({
+        tracks: selectedTracks,
+        playlistId: playlist.id,
+        playlistTitle: playlist.title,
+        format,
+        quality,
+        startImmediately: true,
+      });
+      setIsSuccess(true);
+      setTimeout(() => {
+        setIsSuccess(false);
+        router.push('/queue');
+      }, 1200);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleQueueSelected = async () => {
     const selectedTracks = playlist.tracks.filter((t) => selectedIndices.has(t.index));
     if (selectedTracks.length === 0) return;
@@ -87,12 +117,13 @@ export function PlaylistView({ playlist, onDone }: PlaylistViewProps) {
         playlistTitle: playlist.title,
         format,
         quality,
+        startImmediately: false,
       });
       setIsSuccess(true);
       setTimeout(() => {
         setIsSuccess(false);
         onDone?.();
-      }, 1500);
+      }, 1200);
     } catch (err) {
       console.error(err);
     } finally {
@@ -316,7 +347,7 @@ export function PlaylistView({ playlist, onDone }: PlaylistViewProps) {
 
           <button
             type="button"
-            onClick={handleQueueSelected}
+            onClick={handleDownloadSelected}
             disabled={selectedIndices.size === 0 || isSubmitting || isSuccess}
             className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-white transition-all duration-200 cursor-pointer shadow-lg disabled:opacity-40 disabled:pointer-events-none ${
               isSuccess
@@ -327,14 +358,32 @@ export function PlaylistView({ playlist, onDone }: PlaylistViewProps) {
             {isSuccess ? (
               <>
                 <CheckCircle2 size={16} />
-                <span>Added to Queue</span>
+                <span>Downloading Tracks...</span>
               </>
             ) : (
               <>
-                <Plus size={16} />
-                <span>Add {selectedIndices.size} Tracks to Queue</span>
+                <Download size={16} />
+                <span>
+                  {selectedIndices.size === playlist.tracks.length
+                    ? `Download All ${playlist.tracks.length}`
+                    : `Download ${selectedIndices.size}`}
+                </span>
               </>
             )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleQueueSelected}
+            disabled={selectedIndices.size === 0 || isSubmitting || isSuccess}
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs sm:text-sm text-zinc-200 bg-white/[0.08] hover:bg-white/[0.14] hover:text-white border border-white/[0.1] transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:pointer-events-none"
+          >
+            <Plus size={16} />
+            <span>
+              {selectedIndices.size === playlist.tracks.length
+                ? `Add ${playlist.tracks.length} Tracks to Queue`
+                : `Add ${selectedIndices.size} to Queue`}
+            </span>
           </button>
         </div>
       </div>
