@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #070707;
+    --bg-secondary: #0D0D0F;
+    --card-bg: rgba(255, 255, 255, 0.04);
+    --card-hover-bg: rgba(255, 255, 255, 0.07);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --card-border-hover: rgba(255, 255, 255, 0.16);
+    --text-primary: #FFFFFF;
+    --text-secondary: #A1A1AA;
+    --text-muted: #71717A;
+    --accent-start: #7C3AED;
+    --accent-mid: #6366F1;
+    --accent-end: #3B82F6;
+    --success: #22C55E;
+    --warning: #F59E0B;
+    --error: #EF4444;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    min-height: 100vh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* Glass Surface Utilities */
+.glass-panel {
+  background: var(--card-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--card-border);
+}
+
+.glass-panel-hover {
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-panel-hover:hover {
+  background: var(--card-hover-bg);
+  border-color: var(--card-border-hover);
+}
+
+.glass-dropdown {
+  background: #111114;
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Gradient accents */
+.gradient-accent {
+  background: linear-gradient(135deg, var(--accent-start) 0%, var(--accent-mid) 50%, var(--accent-end) 100%);
+}
+
+.gradient-accent-text {
+  background: linear-gradient(135deg, #A78BFA 0%, #818CF8 50%, #60A5FA 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gradient-accent-border {
+  border-image: linear-gradient(135deg, var(--accent-start), var(--accent-mid), var(--accent-end)) 1;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Pulse Glow */
+@keyframes glowPulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.02);
+  }
+}
+
+.animate-glow {
+  animation: glowPulse 4s infinite ease-in-out;
+}
+
+/* Waveform Bars animation */
+@keyframes waveBar {
+  0%, 100% {
+    height: 6px;
+  }
+  50% {
+    height: 24px;
+  }
+}
+
+.wave-bar {
+  animation: waveBar 1.2s infinite ease-in-out;
+}
+
+/* Mobile Safe Areas */
+.pb-safe {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 5rem);
+}
