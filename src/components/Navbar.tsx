@@ -11,10 +11,6 @@ export function Navbar() {
   const pathname = usePathname();
   const { jobs } = useAudioX();
 
-  if (pathname?.startsWith('/admin')) {
-    return null;
-  }
-
   const pendingCount = jobs.filter(
     (j) => j.status === 'queued' || j.status === 'preparing' || j.status === 'fetching' || j.status === 'converting'
   ).length;

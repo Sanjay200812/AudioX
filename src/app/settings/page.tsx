@@ -309,15 +309,15 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Anonymous Privacy & Telemetry Notice */}
+        {/* 100% Private & Anonymous Notice */}
         <div className="p-5 rounded-2xl glass-panel border border-white/[0.08] shadow-xl flex items-start gap-3.5">
           <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0 mt-0.5">
             <Shield size={20} />
           </div>
           <div>
-            <h4 className="text-sm font-semibold text-white">Privacy & Anonymous Analytics</h4>
+            <h4 className="text-sm font-semibold text-white">100% Private & Public Downloader</h4>
             <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
-              AudioX is completely public and requires no account, email, or passwords. Minimal anonymous operational analytics (random visitor token, format preferences, error rates) may be collected to monitor AudioX system reliability and download queue health. No personal identities, emails, or device files are ever tracked.
+              AudioX is completely public and requires no accounts, passwords, or login. All download history is stored strictly on your local browser device using IndexedDB for duplicate detection. No visitor IDs, analytics, or personal telemetry are collected or transmitted to any server.
             </p>
           </div>
         </div>

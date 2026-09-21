@@ -1,39 +1,24 @@
 # AudioX
 
-Private Audio Download & Offline Listening Tool.
+Lightweight, Public Audio Download & Offline Listening Tool.
 
-## Features
+AudioX is a fast, 100% public, mobile-friendly audio downloader. Its purpose is to allow users to process and download permitted YouTube audio (individual tracks and playlists) directly to individual MP3 and M4A files.
 
-- **YouTube Single Video Audio Processing**: Direct audio extraction in high-fidelity MP3 and M4A formats.
-- **YouTube Playlist Detection & Sequential Processing**: Automatically analyzes full playlists, provides one-click batch queueing or individual track selection, and processes sequential downloads safely.
-- **Offline PWA Experience**: Mobile-first responsive interface with offline player and custom download directory support.
-- **Zero Public Login**: 100% anonymous, privacy-respecting client experience without collecting personal data.
-- **Private Admin Dashboard (`/admin`)**: Protected operations portal with access-key authentication for monitoring system health, downloads, and anonymous traffic.
+- **Zero Login & Zero Accounts**: Immediate access for all users.
+- **Zero Server-Side Database / Analytics**: No Supabase, no tracking, no visitor IDs, no telemetry.
+- **100% Local Browser History**: Download history is stored strictly in your browser (IndexedDB) for duplicate-download detection and file management.
+- **Sequential FIFO Queue**: Concurrency = 1. Tracks process and download individually, one by one.
+- **PWA Ready**: Installable on mobile and desktop with offline player support.
 
 ---
 
-## AUDIOX SUPABASE SETUP
+## Features
 
-1. Create Supabase project.
-2. Open Supabase Project Settings / API Keys.
-3. Copy Project URL.
-4. Copy server Secret key.
-5. Put them in `.env.local`:
-
-```env
-SUPABASE_URL=...
-SUPABASE_SECRET_KEY=...
-```
-
-6. Run SQL from:
-
-`supabase/audiox-analytics.sql`
-
-inside Supabase SQL Editor.
-
-7. Restart development server.
-
-8. Add the same environment variables to production hosting.
+- **YouTube Single Video Audio Processing**: Fast native metadata extraction with MP3 and M4A conversion presets.
+- **YouTube Playlist Detection & Sequential Processing**: Automatically analyzes full playlists, provides one-click batch queueing or individual track selection, and processes sequential downloads safely.
+- **No ZIP Files Policy**: Every track remains an individual, cleanly-tagged audio file.
+- **Offline PWA Experience**: Mobile-first responsive interface with offline player and custom download directory support.
+- **Duplicate Download Detection**: Identifies previously downloaded tracks using browser-local IndexedDB history.
 
 ---
 
@@ -41,22 +26,31 @@ inside Supabase SQL Editor.
 
 | Variable | Description | Required | Scope |
 |---|---|---|---|
-| `SUPABASE_URL` | Supabase Project URL (`https://xyz.supabase.co`) | Required for real-time analytics | Server only |
-| `SUPABASE_SECRET_KEY` | Supabase Server Secret Key (`service_role`) | Required for real-time analytics | Server only |
-| `AUDIOX_ADMIN_KEY` | Secret access key to unlock `/admin` | Yes | Server only |
-| `AUDIOX_TEMP_DIR` | Working directory for audio processing | Optional (defaults to OS temp) | Server only |
-| `AUDIOX_DB_PATH` | Path for local SQLite fallback database | Optional | Server only |
-
-> **Important Security Rule**: `SUPABASE_SECRET_KEY` and `AUDIOX_ADMIN_KEY` are **server-only**. Never prefix them with `NEXT_PUBLIC_` or expose them to browser bundles.
+| `WORKER_URL` | Optional dedicated worker URL (Railway / Render / VPS) | Optional | Server only |
+| `WORKER_SECRET` | Optional worker authentication secret | Optional | Server only |
+| `TEMP_DIR` | Working directory for audio processing | Optional (defaults to `/tmp/audiox`) | Server only |
+| `FILE_EXPIRY_MINUTES` | Retention time before temp file auto-cleanup | Optional (default: `30`) | Server only |
+| `MAX_FILE_SIZE_MB` | Maximum upload file limit in MB | Optional (default: `500`) | Server only |
+| `QUEUE_CONCURRENCY` | Sequential processing concurrency | Optional (default: `1`) | Server only |
 
 ---
 
-## Private Admin Operations
+## Getting Started
 
-The administrative operations console is available directly at:
-`/admin`
+### Local Development
 
-- Access by manually appending `/admin` to any deployment domain URL.
-- Authenticate using the configured `AUDIOX_ADMIN_KEY`.
-- Protected by rate limiting and encrypted HttpOnly session cookies.
-- No public links exist to this route.
+```bash
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+
+# Run unit tests
+npm test
+
+# Build for production
+npm run build
+```
+
+AudioX will start at `http://localhost:3000`.

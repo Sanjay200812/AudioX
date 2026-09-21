@@ -3,10 +3,9 @@
  *
  * AudioX Architecture:
  * - Vercel (Edge / Serverless):
- *   - Frontend Next.js UI & PWA
+ *   - Frontend Next.js UI & PWA (100% public, zero login)
  *   - Lightweight Analyze API (/api/analyze)
- *   - Non-blocking Supabase Analytics & Telemetry
- *   - Admin Dashboard (/admin)
+ *   - Local Browser History & Duplicate Detection
  *
  * - External Worker (Railway / Render / Fly.io / VPS / Docker):
  *   - YouTube audio stream fetching (yt-dlp)

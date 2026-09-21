@@ -1,23 +1,10 @@
-import { NextRequest, NextResponse, after } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { validateMediaUrl } from '@/lib/security/ssrf';
 import { getProvider } from '@/lib/providers/registry';
 import { analysisCache } from '@/lib/cache/analysis.cache';
-import { isSupabaseConfigured, getSupabaseServerClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-function runNonBlocking(task: () => Promise<void> | void) {
-  try {
-    if (typeof after === 'function') {
-      after(task);
-    } else {
-      setTimeout(task, 0);
-    }
-  } catch {
-    setTimeout(task, 0);
-  }
-}
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
@@ -90,38 +77,7 @@ export async function POST(req: NextRequest) {
       analysisCache.set(result.playlist.id, result);
     }
 
-    // 5. Stage: supabase-analytics (Strictly non-blocking via Next.js after())
-    runNonBlocking(async () => {
-      const tSupaStart = Date.now();
-      try {
-        if (isSupabaseConfigured()) {
-          const supabase = getSupabaseServerClient();
-          if (supabase) {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 3000);
-            try {
-              await supabase.from('download_events').insert({
-                visitor_id: 'anonymous',
-                video_id: result.single?.id || result.playlist?.id || 'unknown',
-                title: result.single?.title || result.playlist?.title || 'Unknown Title',
-                creator: result.single?.author || result.playlist?.author || 'Unknown Creator',
-                status: 'analyzed',
-                format: 'mp3',
-                quality: 'high',
-              });
-            } finally {
-              clearTimeout(timer);
-            }
-          }
-        }
-        const supaElapsed = Date.now() - tSupaStart;
-        console.log(`[supabase-analytics] completed in ${supaElapsed}ms`);
-      } catch (err: any) {
-        console.warn(`[supabase-analytics] non-fatal telemetry notice: ${err?.message || 'deferred'}`);
-      }
-    });
-
-    // 6. Stage: analyze:end
+    // 5. Stage: analyze:end
     const totalElapsed = Date.now() - startTime;
     console.log(`[analyze:end] total duration: ${totalElapsed}ms`);
 

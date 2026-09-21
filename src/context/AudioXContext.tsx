@@ -16,12 +16,6 @@ import {
   getAllDownloadsFromIndexedDB,
   clearAllDownloadsFromIndexedDB,
 } from '@/lib/storage/indexeddb';
-import {
-  sendAnalyticsEvent,
-  sendPlaylistAnalytics,
-  recordVisitAnalytics,
-  getOrCreateVisitorId,
-} from '@/lib/analytics/visitor';
 
 interface AudioXContextType {
   jobs: ClientQueueJob[];
@@ -153,9 +147,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         }
       });
     } catch {}
-
-    // Record anonymous visit
-    recordVisitAnalytics();
   }, []);
 
   const updateSettings = useCallback((newSettings: Partial<UserSettings>) => {
@@ -249,36 +240,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
       });
     }
 
-    // Fire non-blocking analytics event for completed download
-    const isRedownload = history.some(
-      (h) => (h.mediaId === (job.mediaId || job.id) || h.id === (job.mediaId || job.id)) && h.format === job.format
-    );
-    sendAnalyticsEvent({
-      status: 'downloaded',
-      videoId: job.mediaId || job.id,
-      title: job.title,
-      creator: job.artist,
-      playlistId: job.playlistId,
-      format: job.format,
-      quality: job.quality,
-      filename: job.fileName,
-      isRedownload,
-      processingDurationMs: job.completedAt && job.startedAt ? job.completedAt - job.startedAt : 0,
-    });
-
-    if (job.playlistId) {
-      fetch('/api/analytics/playlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          visitorId: getOrCreateVisitorId(),
-          playlistId: job.playlistId,
-          action: 'track_completed',
-        }),
-        keepalive: true,
-      }).catch(() => {});
-    }
-
     // Auto-remove completed item from queue if configured
     if (settings.autoRemoveCompleted === 'immediately') {
       setTimeout(() => {
@@ -352,29 +313,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
               handleJobReady(data.job);
             } else if (data.type === 'job:failed') {
               addToast(`Failed: ${data.job.title}`, 'error');
-              sendAnalyticsEvent({
-                status: 'failed',
-                videoId: data.job.mediaId || data.job.id,
-                title: data.job.title,
-                creator: data.job.artist,
-                playlistId: data.job.playlistId,
-                format: data.job.format,
-                quality: data.job.quality,
-                filename: data.job.fileName,
-              });
-
-              if (data.job.playlistId) {
-                fetch('/api/analytics/playlist', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    visitorId: getOrCreateVisitorId(),
-                    playlistId: data.job.playlistId,
-                    action: 'track_failed',
-                  }),
-                  keepalive: true,
-                }).catch(() => {});
-              }
             } else if (data.type === 'job:skipped') {
               addToast(`Skipped: ${data.job.title}`, 'info');
             }
@@ -467,15 +405,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     const data = await res.json();
     addToast(`Added to queue: ${params.title}`, 'success');
 
-    sendAnalyticsEvent({
-      status: 'queued',
-      videoId: params.mediaId,
-      title: params.title,
-      creator: params.artist,
-      format: params.format || settings.defaultFormat,
-      quality: params.quality || settings.defaultQuality,
-    });
-
     return data.job;
   }, [settings.defaultFormat, settings.defaultQuality, settings.filenameFormat, addToast]);
 
@@ -511,13 +440,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
 
     const data = await res.json();
     addToast(`${validTracks.length} tracks added to queue`, 'success');
-
-    sendPlaylistAnalytics({
-      playlistId: params.playlistId,
-      playlistTitle: params.playlistTitle,
-      totalTracks: params.tracks.length,
-      selectedTracks: validTracks.length,
-    });
   }, [settings.defaultFormat, settings.defaultQuality, settings.filenameFormat, addToast]);
 
   const reorderJob = useCallback(async (id: string, direction: 'up' | 'down') => {
@@ -533,38 +455,14 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   }, [addToast]);
 
   const skipJob = useCallback(async (id: string) => {
-    const job = jobs.find((j) => j.id === id);
     await fetch(`/api/jobs/${id}/skip`, { method: 'POST' });
     addToast('Track skipped, advancing to next', 'info');
-    if (job) {
-      sendAnalyticsEvent({
-        status: 'skipped',
-        videoId: job.mediaId || job.id,
-        title: job.title,
-        creator: job.artist,
-        playlistId: job.playlistId,
-        format: job.format,
-        quality: job.quality,
-      });
-    }
-  }, [jobs, addToast]);
+  }, [addToast]);
 
   const cancelJob = useCallback(async (id: string) => {
-    const job = jobs.find((j) => j.id === id);
     await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
     addToast('Job cancelled', 'info');
-    if (job) {
-      sendAnalyticsEvent({
-        status: 'cancelled',
-        videoId: job.mediaId || job.id,
-        title: job.title,
-        creator: job.artist,
-        playlistId: job.playlistId,
-        format: job.format,
-        quality: job.quality,
-      });
-    }
-  }, [jobs, addToast]);
+  }, [addToast]);
 
   const removeJob = useCallback(async (id: string) => {
     await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
