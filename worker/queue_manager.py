@@ -15,15 +15,21 @@ FILE_EXPIRY_SECONDS = FILE_EXPIRY_MINUTES * 60
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+from fastapi import HTTPException, status
+
+MAX_QUEUE_CAPACITY = int(os.getenv("MAX_QUEUE_CAPACITY", "200"))
+MAX_STORED_JOBS = int(os.getenv("MAX_STORED_JOBS", "500"))
+
+
 class QueueManager:
     """
     Manages the sequential execution of audio conversion jobs (Concurrency = 1).
-    Stores jobs in-memory and enforces 30-minute temp file cleanup.
+    Stores jobs in-memory with bounded queue limits and enforces 30-minute temp file cleanup.
     """
 
     def __init__(self):
         self.jobs: Dict[str, Dict[str, Any]] = {}
-        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=MAX_QUEUE_CAPACITY)
         self.active_job_id: Optional[str] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -61,7 +67,7 @@ class QueueManager:
             self.queue.task_done()
 
     async def _cleanup_loop(self):
-        """Periodically removes files older than FILE_EXPIRY_SECONDS."""
+        """Periodically removes files older than FILE_EXPIRY_SECONDS and prunes excess records."""
         while True:
             await asyncio.sleep(300)  # Check every 5 minutes
             now = time.time()
@@ -78,6 +84,19 @@ class QueueManager:
                                     self.jobs[item.name]["outputPath"] = None
                         except Exception:
                             pass
+
+                # Prune old terminal jobs if memory footprint exceeds MAX_STORED_JOBS
+                if len(self.jobs) > MAX_STORED_JOBS:
+                    sorted_terminal = sorted(
+                        [j for j in self.jobs.values() if j.get("status") in ("completed", "failed", "cancelled", "ready")],
+                        key=lambda x: x.get("createdAt", 0),
+                    )
+                    excess = len(self.jobs) - MAX_STORED_JOBS
+                    for old_job in sorted_terminal[:excess]:
+                        jid = old_job["id"]
+                        if jid != self.active_job_id:
+                            self.jobs.pop(jid, None)
+
             except Exception as e:
                 print(f"[queue_manager] Error in cleanup task: {e}")
 
@@ -93,7 +112,21 @@ class QueueManager:
         audio_format: str,
         quality: str,
     ) -> Dict[str, Any]:
-        """Creates a new queued job and adds it to the sequential queue."""
+        """Creates or retrieves a job. Enforces queue capacity and idempotency."""
+        # 1. Idempotent check: if job exists and is still active or ready, return it
+        if job_id in self.jobs:
+            existing = self.jobs[job_id]
+            if existing.get("status") in ("queued", "processing", "ready"):
+                print(f"[queue_manager] Idempotent hit: job {job_id} already exists (status: {existing['status']})")
+                return existing
+
+        # 2. Check queue capacity
+        if self.queue.full():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Worker queue is at maximum capacity. Please wait for current jobs to finish.",
+            )
+
         download_token = generate_download_token()
 
         job: Dict[str, Any] = {

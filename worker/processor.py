@@ -33,13 +33,30 @@ def map_bitrate(quality: Optional[str]) -> str:
     return BITRATE_MAP.get(quality.lower(), "192k")
 
 
+def resolve_ffmpeg_bin() -> Optional[str]:
+    """Finds executable ffmpeg binary from PATH, FFMPEG_PATH, or common paths."""
+    env_bin = os.getenv("FFMPEG_PATH")
+    if env_bin and Path(env_bin).is_file():
+        return env_bin
+
+    bin_path = shutil.which("ffmpeg")
+    if bin_path:
+        return bin_path
+
+    for candidate in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/tmp/bin/ffmpeg"]:
+        if Path(candidate).is_file():
+            return candidate
+
+    return None
+
+
 def check_ffmpeg_available() -> bool:
     """Verifies that FFmpeg is installed and executable."""
-    ffmpeg_bin = shutil.which("ffmpeg")
+    ffmpeg_bin = resolve_ffmpeg_bin()
     if not ffmpeg_bin:
         return False
     try:
-        res = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, timeout=3)
+        res = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, timeout=5)
         return res.returncode == 0
     except Exception:
         return False
@@ -203,11 +220,10 @@ async def process_media_job(
             if source_file != final_output_path:
                 shutil.move(str(source_file), str(final_output_path))
         else:
-            # Requires FFmpeg transcoding or remuxing
-            if not check_ffmpeg_available():
+            ffmpeg_bin = resolve_ffmpeg_bin()
+            if not ffmpeg_bin:
                 raise Exception("FFmpeg binary is not available on this system.")
 
-            ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
             ffmpeg_cmd = [
                 ffmpeg_bin,
                 "-y",
@@ -240,7 +256,14 @@ async def process_media_job(
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            try:
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise Exception("FFmpeg audio conversion timed out after 3 minutes.")
 
             if proc.returncode != 0:
                 err_text = stderr.decode(errors="replace")[-400:] if stderr else "Unknown error"

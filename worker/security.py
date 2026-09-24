@@ -25,11 +25,13 @@ PRIVATE_IP_REGEX = re.compile(
 def verify_worker_secret(authorization: Optional[str] = Header(None)) -> bool:
     """
     Validates Authorization: Bearer <WORKER_SECRET>.
-    If WORKER_SECRET is not configured (e.g. in dev mode), access is permitted with a warning.
-    In production, rejects requests with 401 Unauthorized if secret is missing or invalid.
+    Fails closed if WORKER_SECRET is not configured or authorization is missing/invalid.
     """
     if not WORKER_SECRET:
-        return True
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Worker authentication is not configured. WORKER_SECRET must be set.",
+        )
 
     if not authorization:
         raise HTTPException(
@@ -55,6 +57,46 @@ def verify_worker_secret(authorization: Optional[str] = Header(None)) -> bool:
         )
 
     return True
+
+
+JOB_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+ALLOWED_FORMATS = {"mp3", "m4a"}
+ALLOWED_QUALITIES = {"standard", "high", "best", "128k", "192k", "256k", "320k"}
+
+
+def validate_job_id(job_id: str) -> str:
+    """
+    Validates job ID to prevent directory traversal and injection.
+    Only allows alphanumeric characters, underscores, and hyphens up to 64 chars.
+    """
+    if not job_id or not isinstance(job_id, str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Job ID is required.")
+
+    cleaned = job_id.strip()
+    if not JOB_ID_REGEX.match(cleaned) or ".." in cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Job ID format. Must be alphanumeric with hyphens or underscores (max 64 chars).",
+        )
+    return cleaned
+
+
+def validate_media_options(audio_format: str, quality: str) -> tuple[str, str]:
+    """Validates that requested audio format and quality are permitted."""
+    fmt = (audio_format or "mp3").strip().lower()
+    q = (quality or "high").strip().lower()
+
+    if fmt not in ALLOWED_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported format '{fmt}'. Allowed: {', '.join(sorted(ALLOWED_FORMATS))}.",
+        )
+    if q not in ALLOWED_QUALITIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported quality '{q}'. Allowed: {', '.join(sorted(ALLOWED_QUALITIES))}.",
+        )
+    return fmt, q
 
 
 def validate_source_url(url_or_id: str) -> str:

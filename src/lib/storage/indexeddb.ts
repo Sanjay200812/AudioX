@@ -1,8 +1,9 @@
 import { DownloadHistoryItem, AudioFormat } from '../types';
 
 const DB_NAME = 'audiox_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'download_history';
+const BLOB_STORE_NAME = 'audio_blobs';
 
 /**
  * Open or upgrade the AudioX IndexedDB database.
@@ -25,6 +26,9 @@ function openDB(): Promise<IDBDatabase | null> {
           store.createIndex('mediaId_format', ['mediaId', 'format'], { unique: false });
           store.createIndex('completedAt', 'completedAt', { unique: false });
         }
+        if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+          db.createObjectStore(BLOB_STORE_NAME, { keyPath: 'id' });
+        }
       };
 
       request.onsuccess = () => {
@@ -43,30 +47,77 @@ function openDB(): Promise<IDBDatabase | null> {
 }
 
 /**
- * Save a completed download record to IndexedDB.
+ * Save a completed download record and optional audio Blob to IndexedDB for true offline listening.
  */
-export async function saveDownloadToIndexedDB(item: DownloadHistoryItem): Promise<boolean> {
+export async function saveDownloadToIndexedDB(item: DownloadHistoryItem, blob?: Blob): Promise<boolean> {
   const db = await openDB();
   if (!db) return false;
 
   return new Promise((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const stores = blob ? [STORE_NAME, BLOB_STORE_NAME] : [STORE_NAME];
+      const tx = db.transaction(stores, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const record = {
+
+      const record: DownloadHistoryItem = {
         ...item,
         mediaId: item.mediaId || item.id,
+        hasAudioBlob: Boolean(blob) || item.hasAudioBlob || false,
       };
-      const req = store.put(record);
+      store.put(record);
 
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => {
-        console.warn('Failed to save download record in IndexedDB:', req.error);
+      if (blob) {
+        const blobStore = tx.objectStore(BLOB_STORE_NAME);
+        blobStore.put({
+          id: item.id,
+          blob,
+          fileName: item.fileName,
+          format: item.format,
+          mimeType: item.format === 'mp3' ? 'audio/mpeg' : 'audio/mp4',
+          savedAt: Date.now(),
+        });
+      }
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => {
+        console.warn('Failed to save download record in IndexedDB:', tx.error);
         resolve(false);
       };
     } catch (err) {
       console.warn('IndexedDB transaction failed:', err);
       resolve(false);
+    }
+  });
+}
+
+/**
+ * Retrieve audio Blob from IndexedDB for offline playback or instant download.
+ */
+export async function getAudioBlobFromIndexedDB(id: string): Promise<Blob | null> {
+  const db = await openDB();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+        return resolve(null);
+      }
+      const tx = db.transaction(BLOB_STORE_NAME, 'readonly');
+      const store = tx.objectStore(BLOB_STORE_NAME);
+      const req = store.get(id);
+
+      req.onsuccess = () => {
+        const result = req.result;
+        if (result && result.blob instanceof Blob) {
+          resolve(result.blob);
+        } else {
+          resolve(null);
+        }
+      };
+
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
     }
   });
 }
@@ -102,7 +153,34 @@ export async function getAllDownloadsFromIndexedDB(): Promise<DownloadHistoryIte
 }
 
 /**
- * Clear all records from IndexedDB history.
+ * Delete a single download record and its audio blob from IndexedDB.
+ */
+export async function deleteDownloadFromIndexedDB(id: string): Promise<boolean> {
+  const db = await openDB();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const stores = db.objectStoreNames.contains(BLOB_STORE_NAME)
+        ? [STORE_NAME, BLOB_STORE_NAME]
+        : [STORE_NAME];
+      const tx = db.transaction(stores, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(id);
+
+      if (db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+        tx.objectStore(BLOB_STORE_NAME).delete(id);
+      }
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Clear all records and audio blobs from IndexedDB history.
  */
 export async function clearAllDownloadsFromIndexedDB(): Promise<boolean> {
   const db = await openDB();
@@ -110,12 +188,18 @@ export async function clearAllDownloadsFromIndexedDB(): Promise<boolean> {
 
   return new Promise((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.clear();
+      const stores = db.objectStoreNames.contains(BLOB_STORE_NAME)
+        ? [STORE_NAME, BLOB_STORE_NAME]
+        : [STORE_NAME];
+      const tx = db.transaction(stores, 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
 
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => resolve(false);
+      if (db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+        tx.objectStore(BLOB_STORE_NAME).clear();
+      }
+
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
     } catch {
       resolve(false);
     }

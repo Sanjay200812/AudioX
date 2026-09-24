@@ -1,10 +1,21 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
   "functions": {
-    "api/raw.py": {
+    "src/app/api/analyze/route.ts": {
       "maxDuration": 60
     },
-    "src/app/api/media/process/route.ts": {
+    "src/app/api/jobs/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/jobs/[id]/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/download/[token]/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/health/route.ts": {
+      "maxDuration": 30
     }
   }
 }

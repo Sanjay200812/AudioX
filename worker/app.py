@@ -14,9 +14,12 @@ from processor import check_ffmpeg_available
 from queue_manager import queue_manager
 from security import (
     sanitize_filename,
+    validate_job_id,
+    validate_media_options,
     validate_source_url,
     verify_worker_secret,
 )
+import secrets
 
 
 @asynccontextmanager
@@ -33,11 +36,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS setup: allow AudioX frontends to stream downloads if requested directly
+# CORS setup: strict non-credentialed cross-origin support
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
+allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://.*",
-    allow_credentials=True,
+    allow_origins=allowed_origins if allowed_origins != ["*"] else ["*"],
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "Content-Length", "Content-Type"],
@@ -87,7 +92,7 @@ def get_health():
 def create_job(body: CreateJobRequest):
     """
     Enqueues an audio processing job into the sequential FIFO queue (concurrency = 1).
-    Returns quickly with jobId and status: 'queued'.
+    Validates job ID, target URL, audio format, and quality.
     """
     target_url = body.sourceUrl or body.url or body.videoId or body.mediaId
     if not target_url:
@@ -99,7 +104,10 @@ def create_job(body: CreateJobRequest):
     # Validate and canonicalize YouTube URL (prevent SSRF)
     canonical_url = validate_source_url(target_url)
 
-    job_id = body.id or str(uuid.uuid4())
+    # Validate job ID and media options
+    job_id = validate_job_id(body.id) if body.id else str(uuid.uuid4())
+    audio_format, quality = validate_media_options(body.format, body.quality)
+
     resolved_video_id = body.videoId or body.mediaId
     resolved_creator = body.artist or body.creator
 
@@ -111,15 +119,15 @@ def create_job(body: CreateJobRequest):
         creator=resolved_creator,
         thumbnail=body.thumbnail,
         duration=body.duration,
-        audio_format=body.format,
-        quality=body.quality,
+        audio_format=audio_format,
+        quality=quality,
     )
 
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={
             "jobId": job["id"],
-            "status": "queued",
+            "status": job.get("status", "queued"),
         },
     )
 
@@ -127,7 +135,8 @@ def create_job(body: CreateJobRequest):
 @app.get("/jobs/{job_id}", dependencies=[Depends(verify_worker_secret)])
 def get_job(job_id: str):
     """Retrieves current job status, authentic stage, progress percentage, and downloadToken."""
-    job = queue_manager.get_job(job_id)
+    clean_id = validate_job_id(job_id)
+    job = queue_manager.get_job(clean_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
@@ -140,26 +149,28 @@ def get_job(job_id: str):
 @app.post("/jobs/{job_id}/cancel", dependencies=[Depends(verify_worker_secret)])
 def cancel_job(job_id: str):
     """Cancels a queued or currently processing job."""
-    success = queue_manager.cancel_job(job_id)
+    clean_id = validate_job_id(job_id)
+    success = queue_manager.cancel_job(clean_id)
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found or already completed.")
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={"jobId": job_id, "status": "cancelled"},
+        content={"jobId": clean_id, "status": "cancelled"},
     )
 
 
 @app.post("/jobs/{job_id}/retry", dependencies=[Depends(verify_worker_secret)])
 def retry_job(job_id: str):
     """Re-enqueues a failed job in place, preserving job ID."""
-    job = queue_manager.retry_job(job_id)
+    clean_id = validate_job_id(job_id)
+    job = queue_manager.retry_job(clean_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={"jobId": job_id, "status": "queued", "retryCount": job.get("retryCount", 0)},
+        content={"jobId": clean_id, "status": "queued", "retryCount": job.get("retryCount", 0)},
     )
 
 
@@ -169,12 +180,14 @@ def download_job(job_id: str, token: str = Query(..., description="Short-lived d
     Validates the download token and streams the converted audio file.
     Does not expose the WORKER_SECRET to browser clients.
     """
-    job = queue_manager.get_job(job_id)
+    clean_id = validate_job_id(job_id)
+    job = queue_manager.get_job(clean_id)
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
-    # Validate download token
-    if not job.get("downloadToken") or token != job.get("downloadToken"):
+    # Validate download token with constant-time comparison
+    expected_token = job.get("downloadToken")
+    if not expected_token or not secrets.compare_digest(token, expected_token):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired download token.")
 
     if job.get("status") != "ready" or not job.get("outputPath"):

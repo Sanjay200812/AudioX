@@ -1,0 +1,27 @@
+# Exclude dedicated worker from Vercel deployment bundle
+worker/
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Version control & internal tools
+.git
+.github
+.gitignore
+
+# Environment & secrets
+.env*
+!.env.example
+worker/.env*
+!worker/.env.example
+
+# Temporary files & storage
+.audiox_data
+.temp_audiox
+tmp/
+
+# Python & testing
+__pycache__/
+*.py[cod]
+coverage/
+vitest.config.*

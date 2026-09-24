@@ -1,21 +1,35 @@
 services:
-  audiox-web:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: audiox-worker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - WORKER_SECRET=${AUDIOX_WORKER_SECRET:-audiox_local_secret}
+      - TEMP_DIR=/tmp/audiox
+      - FILE_EXPIRY_MINUTES=30
+      - MAX_FILE_SIZE_MB=500
+      - MAX_VIDEO_DURATION_MINUTES=120
+    volumes:
+      - audiox-worker-temp:/tmp/audiox
+
+  web:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: audiox
+    container_name: audiox-web
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - AUDIOX_PASSWORD=${AUDIOX_PASSWORD:-}
-      - TEMP_DIR=/tmp/audiox
-      - FILE_EXPIRY_MINUTES=30
-      - MAX_FILE_SIZE_MB=500
-      - QUEUE_CONCURRENCY=1
-    volumes:
-      - audiox-temp:/tmp/audiox
+      - AUDIOX_WORKER_URL=http://worker:8000
+      - AUDIOX_WORKER_SECRET=${AUDIOX_WORKER_SECRET:-audiox_local_secret}
+    depends_on:
+      - worker
 
 volumes:
-  audiox-temp:
+  audiox-worker-temp:
     driver: local

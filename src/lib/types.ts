@@ -148,6 +148,7 @@ export interface AnalysisResponse {
 export interface DownloadHistoryItem {
   id: string;
   mediaId: string;
+  jobId?: string;
   playlistId?: string;
   title: string;
   artist?: string;
@@ -160,6 +161,7 @@ export interface DownloadHistoryItem {
   fileName: string;
   downloadToken?: string;
   completedAt: number;
+  hasAudioBlob?: boolean;
 }
 
 export interface UserSettings {

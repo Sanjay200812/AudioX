@@ -3,16 +3,13 @@
 import React, { useState } from 'react';
 import { URLInput } from '@/components/URLInput';
 import { MediaResultCard } from '@/components/MediaResultCard';
-import { PlaylistView } from '@/components/PlaylistView';
-import { LocalUpload } from '@/components/LocalUpload';
 import { BrowserBlockedNotice } from '@/components/BrowserBlockedNotice';
 import { SessionRecoveryBanner } from '@/components/SessionRecoveryBanner';
 import { SingleMediaMetadata, PlaylistMetadata } from '@/lib/types';
-import { Link2, Upload, HardDrive, Shield } from 'lucide-react';
+import { Shield } from 'lucide-react';
 import { YouTubeIcon } from '@/components/BrandIcons';
 
 export default function HomePage() {
-  const [activeTab, setActiveTab] = useState<'link' | 'upload'>('link');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [singleResult, setSingleResult] = useState<SingleMediaMetadata | null>(null);
@@ -92,41 +89,6 @@ export default function HomePage() {
           <p className="text-xs sm:text-sm text-zinc-400 max-w-md mx-auto leading-relaxed">
             For media you own, have permission to use, or are otherwise legally permitted to download.
           </p>
-
-          {/* Mode Tabs */}
-          <div className="flex items-center justify-center gap-1 mt-7 p-1 rounded-xl bg-zinc-900/80 border border-white/[0.08] max-w-xs mx-auto">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('link');
-                handleReset();
-              }}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeTab === 'link'
-                  ? 'bg-white/[0.1] text-white shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Link2 size={14} className={activeTab === 'link' ? 'text-indigo-400' : ''} />
-              <span>YouTube Link</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('upload');
-                handleReset();
-              }}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeTab === 'upload'
-                  ? 'bg-white/[0.1] text-white shadow-sm'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Upload size={14} className={activeTab === 'upload' ? 'text-indigo-400' : ''} />
-              <span>Upload File</span>
-            </button>
-          </div>
         </div>
       )}
 
@@ -149,24 +111,18 @@ export default function HomePage() {
               onDone={handleReset}
             />
           </div>
-        ) : activeTab === 'link' ? (
+        ) : (
           <div className="flex flex-col items-center">
             <URLInput onAnalyze={(url) => handleAnalyze(url)} isLoading={isLoading} error={error} />
 
-            {/* Supported platforms strip: YouTube and Local Media only */}
+            {/* Supported platforms strip: YouTube videos, shorts & playlists */}
             <div className="mt-8 flex flex-wrap items-center justify-center gap-6 text-xs text-zinc-500">
               <span className="flex items-center gap-2">
                 <YouTubeIcon size={16} className="text-red-400/80" />
                 <span>YouTube Single Videos, Shorts & Playlists</span>
               </span>
-              <span className="flex items-center gap-2">
-                <HardDrive size={15} className="text-emerald-400/80" />
-                <span>Local Audio & Video</span>
-              </span>
             </div>
           </div>
-        ) : (
-          <LocalUpload onDone={handleReset} />
         )}
       </div>
 

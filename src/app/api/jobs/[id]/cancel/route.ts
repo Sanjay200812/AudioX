@@ -11,9 +11,8 @@ export async function POST(
   const { id } = await context.params;
   const cancelled = await cancelWorkerJob(id);
 
-  if (!cancelled) {
-    return NextResponse.json({ error: 'Job not found or already finished' }, { status: 400 });
-  }
-
-  return NextResponse.json({ message: 'Job cancelled' });
+  return NextResponse.json({
+    success: true,
+    message: cancelled ? 'Job cancelled' : 'Job already completed or cancelled',
+  });
 }

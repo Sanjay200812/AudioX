@@ -1,8 +1,13 @@
+import 'server-only';
+import { getWorkerUrl, getWorkerSecret, isWorkerConfigured } from '@/lib/config';
+
 /**
- * AudioX Server-Only Railway Worker Client.
- * Communicates with the external dedicated media worker.
- * NEVER import this file in client-side React components.
+ * AudioX Server-Only Media Worker Client.
+ * Communicates securely with the media processing worker.
+ * Enforces bounded timeouts, sanitized error responses, and strict server boundary.
  */
+
+export { isWorkerConfigured };
 
 export interface WorkerJobStatus {
   jobId: string;
@@ -42,19 +47,12 @@ export interface CreateWorkerJobParams {
   duration?: number;
 }
 
-function getWorkerConfig(): { workerUrl: string; workerSecret: string } {
-  const workerUrl = (process.env.AUDIOX_WORKER_URL || '').trim().replace(/\/+$/, '');
-  const workerSecret = (process.env.AUDIOX_WORKER_SECRET || '').trim();
-  return { workerUrl, workerSecret };
-}
-
-export function isWorkerConfigured(): boolean {
-  const { workerUrl } = getWorkerConfig();
-  return Boolean(workerUrl);
-}
+const DEFAULT_FETCH_TIMEOUT_MS = 15000;
+const HEALTH_FETCH_TIMEOUT_MS = 8000;
+const DOWNLOAD_FETCH_TIMEOUT_MS = 45000;
 
 function getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
-  const { workerSecret } = getWorkerConfig();
+  const workerSecret = getWorkerSecret();
   const headers: Record<string, string> = {
     ...customHeaders,
   };
@@ -65,7 +63,7 @@ function getAuthHeaders(customHeaders: Record<string, string> = {}): Record<stri
 }
 
 /**
- * Health check on dedicated Railway worker.
+ * Health check on media worker with truthful status reporting.
  */
 export async function checkWorkerHealth(): Promise<{
   ok: boolean;
@@ -76,7 +74,7 @@ export async function checkWorkerHealth(): Promise<{
   queue?: boolean;
   error?: string;
 }> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) {
     return { ok: false, status: 'unconfigured', error: 'AUDIOX_WORKER_URL is not set' };
   }
@@ -86,6 +84,7 @@ export async function checkWorkerHealth(): Promise<{
       method: 'GET',
       headers: getAuthHeaders(),
       cache: 'no-store',
+      signal: AbortSignal.timeout(HEALTH_FETCH_TIMEOUT_MS),
     });
 
     if (!res.ok) {
@@ -96,38 +95,54 @@ export async function checkWorkerHealth(): Promise<{
     return {
       ok: data.status === 'ok',
       status: data.status || 'unknown',
-      python: data.python,
-      ytdlp: data.ytdlp,
-      ffmpeg: data.ffmpeg,
-      queue: data.queue,
+      python: Boolean(data.python),
+      ytdlp: Boolean(data.ytdlp),
+      ffmpeg: Boolean(data.ffmpeg),
+      queue: Boolean(data.queue),
     };
   } catch (err: any) {
-    return { ok: false, status: 'unreachable', error: err?.message || 'Worker connection failed' };
+    const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    return {
+      ok: false,
+      status: 'unreachable',
+      error: isTimeout ? 'Worker connection timed out' : 'Worker connection failed',
+    };
   }
 }
 
 /**
- * Enqueue a media processing job on the Railway worker.
+ * Enqueue a media processing job on the worker.
  * Returns quickly with jobId and status: 'queued'.
  */
 export async function createWorkerJob(params: CreateWorkerJobParams): Promise<{ jobId: string; status: string }> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) {
-    throw new Error('AUDIOX_WORKER_URL is not configured on this server.');
+    throw new Error('Audio processing worker URL is not configured on this server.');
   }
 
-  const res = await fetch(`${workerUrl}/jobs`, {
-    method: 'POST',
-    headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(params),
-    cache: 'no-store',
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${workerUrl}/jobs`, {
+      method: 'POST',
+      headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(params),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
+    });
+  } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error('Worker request timed out. Please try again.');
+    }
+    throw new Error('Audio processing worker is unreachable.');
+  }
 
   if (!res.ok) {
-    let errMsg = `Worker rejected job (status ${res.status})`;
+    let errMsg = `Worker rejected job (${res.status})`;
     try {
       const errJson = await res.json();
-      if (errJson.detail) errMsg = typeof errJson.detail === 'string' ? errJson.detail : JSON.stringify(errJson.detail);
+      if (errJson.detail) {
+        errMsg = typeof errJson.detail === 'string' ? errJson.detail : JSON.stringify(errJson.detail);
+      }
     } catch {}
     throw new Error(errMsg);
   }
@@ -139,7 +154,7 @@ export async function createWorkerJob(params: CreateWorkerJobParams): Promise<{ 
  * Poll job status, authentic stages, and progress percentages from the worker.
  */
 export async function getWorkerJob(jobId: string): Promise<WorkerJobStatus | null> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) return null;
 
   try {
@@ -147,16 +162,17 @@ export async function getWorkerJob(jobId: string): Promise<WorkerJobStatus | nul
       method: 'GET',
       headers: getAuthHeaders(),
       cache: 'no-store',
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
     });
 
     if (res.status === 404) return null;
     if (!res.ok) {
-      throw new Error(`Failed to fetch job: HTTP ${res.status}`);
+      throw new Error(`Worker returned status ${res.status}`);
     }
 
     return await res.json();
-  } catch (err) {
-    console.error(`[worker-client] Error polling job ${jobId}:`, err);
+  } catch (err: any) {
+    console.error(`[worker-client] Polling error for job ${jobId}:`, err?.message || err);
     return null;
   }
 }
@@ -165,7 +181,7 @@ export async function getWorkerJob(jobId: string): Promise<WorkerJobStatus | nul
  * Cancel an active or queued job on the worker.
  */
 export async function cancelWorkerJob(jobId: string): Promise<boolean> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) return false;
 
   try {
@@ -173,6 +189,7 @@ export async function cancelWorkerJob(jobId: string): Promise<boolean> {
       method: 'POST',
       headers: getAuthHeaders(),
       cache: 'no-store',
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
     });
     return res.ok;
   } catch {
@@ -184,7 +201,7 @@ export async function cancelWorkerJob(jobId: string): Promise<boolean> {
  * Re-queue a failed job in place on the worker.
  */
 export async function retryWorkerJob(jobId: string): Promise<boolean> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) return false;
 
   try {
@@ -192,6 +209,7 @@ export async function retryWorkerJob(jobId: string): Promise<boolean> {
       method: 'POST',
       headers: getAuthHeaders(),
       cache: 'no-store',
+      signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
     });
     return res.ok;
   } catch {
@@ -204,15 +222,23 @@ export async function retryWorkerJob(jobId: string): Promise<boolean> {
  * Validates download token directly with worker.
  */
 export async function fetchWorkerDownload(jobId: string, token: string): Promise<Response> {
-  const { workerUrl } = getWorkerConfig();
+  const workerUrl = getWorkerUrl();
   if (!workerUrl) {
-    throw new Error('AUDIOX_WORKER_URL is not configured.');
+    throw new Error('Audio processing worker URL is not configured.');
   }
 
   const query = new URLSearchParams({ token });
-  return await fetch(`${workerUrl}/jobs/${encodeURIComponent(jobId)}/download?${query.toString()}`, {
-    method: 'GET',
-    headers: getAuthHeaders(),
-    cache: 'no-store',
-  });
+  try {
+    return await fetch(`${workerUrl}/jobs/${encodeURIComponent(jobId)}/download?${query.toString()}`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(DOWNLOAD_FETCH_TIMEOUT_MS),
+    });
+  } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error('Audio download streaming timed out.');
+    }
+    throw new Error('Failed to connect to audio worker for download.');
+  }
 }

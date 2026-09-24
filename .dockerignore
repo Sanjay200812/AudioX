@@ -1,0 +1,33 @@
+# Version control & metadata
+.git
+.gitignore
+.github
+
+# Environment & secrets
+.env*
+!.env.example
+worker/.env*
+!worker/.env.example
+*.pem
+*.key
+
+# Dependencies & build caches
+node_modules
+.next
+.turbo
+out
+build
+coverage
+
+# Temporary files & data
+.temp_audiox
+.audiox_data
+tmp
+*.log
+npm-debug.log*
+
+# Python caches
+__pycache__
+*.py[cod]
+*$py.class
+worker/__pycache__

@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useAudioX } from '@/context/AudioXContext';
 import { SourceBadge } from '@/components/SourceBadge';
 import { AudioPreviewPlayer } from '@/components/AudioPreviewPlayer';
+import { getAudioBlobFromIndexedDB } from '@/lib/storage/indexeddb';
+import { DownloadHistoryItem } from '@/lib/types';
 import {
   Download,
   Trash2,
@@ -28,20 +30,44 @@ function formatDate(timestamp: number): string {
 export default function DownloadsPage() {
   const { history, clearHistory, removeHistoryItem, addToast } = useAudioX();
 
-  const handleDownloadAgain = (token?: string, fileName?: string) => {
-    if (!token) {
-      addToast('Download token has expired. Please re-queue the media item.', 'error');
-      return;
+  const handleDownloadAgain = async (item: DownloadHistoryItem) => {
+    try {
+      // 1. Try local IndexedDB blob first (instant offline download!)
+      const blob = await getAudioBlobFromIndexedDB(item.id);
+      if (blob) {
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = item.fileName || `${item.title}.${item.format}`;
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(blobUrl);
+          if (link.parentNode) link.parentNode.removeChild(link);
+        }, 1000);
+        addToast(`Downloading ${item.fileName || 'audio'} (offline cache)`, 'success');
+        return;
+      }
+
+      // 2. Fall back to remote worker authorized stream with both token and jobId
+      const jobId = item.jobId || item.id;
+      if (item.downloadToken && jobId) {
+        const link = document.createElement('a');
+        link.href = `/api/download/${encodeURIComponent(item.downloadToken)}?jobId=${encodeURIComponent(jobId)}`;
+        link.download = item.fileName || `${item.title}.${item.format}`;
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+          if (link.parentNode) link.parentNode.removeChild(link);
+        }, 1000);
+        addToast(`Downloading ${item.fileName || 'audio'}`, 'success');
+        return;
+      }
+
+      addToast('Audio download has expired on worker. Please re-queue the track.', 'error');
+    } catch {
+      addToast('Failed to download audio file.', 'error');
     }
-    const link = document.createElement('a');
-    link.href = `/api/download/${token}`;
-    if (fileName) link.setAttribute('download', fileName);
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      if (link.parentNode) link.parentNode.removeChild(link);
-    }, 500);
-    addToast(`Downloading ${fileName || 'audio'}`, 'success');
   };
 
   return (
@@ -152,21 +178,17 @@ export default function DownloadsPage() {
 
               {/* Right: Audio Player & Action Buttons */}
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto shrink-0">
-                {item.downloadToken && (
-                  <AudioPreviewPlayer token={item.downloadToken} />
-                )}
+                <AudioPreviewPlayer id={item.id} token={item.downloadToken} jobId={item.jobId || item.id} />
 
                 <div className="flex items-center gap-2 justify-end">
-                  {item.downloadToken && (
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadAgain(item.downloadToken, item.fileName)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/[0.08] hover:bg-white/[0.14] text-zinc-200 transition-colors flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Download size={13} />
-                      <span>Download</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadAgain(item)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/[0.08] hover:bg-white/[0.14] text-zinc-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download size={13} />
+                    <span>Download</span>
+                  </button>
 
                   <button
                     type="button"

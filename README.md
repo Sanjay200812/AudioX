@@ -1,98 +1,91 @@
 # AudioX
 
-Lightweight, Public Audio Download & Offline Listening Tool.
-
-AudioX decouples heavy media processing from the frontend:
-1. **Vercel (Next.js Frontend & API)**:
-   - Ultra-fast native metadata analysis (oEmbed + Innertube HTML without heavy processing)
-   - Mobile-first playlist and sequential queue UI
-   - Progressive Web App (PWA) with offline audio player
-   - Browser-only IndexedDB download history and duplicate-download detection
-   - Server-only proxy client communicating securely with the Railway worker
-2. **Railway (Dedicated Media Worker)**:
-   - Python 3.11 + FastAPI container
-   - Direct `yt-dlp` Python library execution
-   - FFmpeg & ffprobe (`libmp3lame` MP3 transcoding + native M4A optimization)
-   - Strictly sequential FIFO queue (concurrency = 1)
-   - Automatic 30-minute temporary file cleanup
+**AudioX** is a modern, high-performance YouTube audio downloader and offline listening web application built with Next.js and React.
 
 ---
 
-## 1. Railway Worker Deployment
+## Architecture Overview
 
-1. **Push current repository to GitHub**:
-   ```bash
-   git push origin main
-   ```
+AudioX combines lightweight edge/serverless metadata extraction with dedicated media processing:
 
-2. **Create Railway Project**:
-   - Go to [railway.app](https://railway.app) and create a **New Project**.
-   - Select **Deploy from GitHub repo** and choose your `AudioX` repository.
-
-3. **Configure Service Source**:
-   - Open service **Settings**.
-   - Under **Build**:
-     - **Dockerfile Path**: `worker/Dockerfile`
-     - **Watch Paths**: `/worker/**`
-
-4. **Add Railway Environment Variables**:
-   In the **Variables** tab of the service, add:
-   - `WORKER_SECRET=<strong-random-secret>`
-   - `TEMP_DIR=/tmp/audiox`
-   - `FILE_EXPIRY_MINUTES=30`
-   - `MAX_FILE_SIZE_MB=500`
-   - `MAX_VIDEO_DURATION_MINUTES=120`
-
-5. **Deploy Worker**:
-   Railway will automatically build the container, install FFmpeg, and start FastAPI on `$PORT`.
-
-6. **Generate Public HTTPS Domain**:
-   - Under **Networking** -> **Public Networking**, click **Generate Domain**.
-   - Example: `https://audiox-worker-production.up.railway.app`.
-
-7. **Test Worker Health**:
-   ```bash
-   curl -s https://<your-worker-domain>.up.railway.app/health
-   ```
-   Must return:
-   ```json
-   {
-     "status": "ok",
-     "python": true,
-     "ytdlp": true,
-     "ffmpeg": true,
-     "queue": true
-   }
-   ```
+```
+User Browser
+    │
+    ▼
+Next.js Frontend (Vercel)
+    │
+    ├── Native Metadata Analysis (/api/analyze)
+    │   └── oEmbed + Lightweight Watch Page Parser (0s delay, pure TypeScript)
+    │
+    ├── Sequential Queue & Download State
+    │   └── Bounded FIFO queue orchestration with real-time stage tracking
+    │
+    ├── Browser Offline Storage
+    │   └── IndexedDB v2 (audio_blobs store for full offline playback)
+    │
+    └── Media Worker Client (/api/jobs, /api/download)
+            │ (Server-to-Server authenticated HTTP)
+            ▼
+    Media Processing Worker
+            │
+            ├── yt-dlp (Native Python library audio stream extraction)
+            ├── FFmpeg / ffprobe (libmp3lame MP3 transcoding & native M4A optimization)
+            └── Automated temporary file lifecycle & cleanup
+```
 
 ---
 
-## 2. Vercel Connection Configuration
+## Features
 
-1. In your Vercel project dashboard, navigate to **Settings** -> **Environment Variables**.
-2. Add the following production variables:
-
-   | Variable | Value |
-   | :--- | :--- |
-   | `AUDIOX_WORKER_URL` | `https://<your-worker-domain>.up.railway.app` |
-   | `AUDIOX_WORKER_SECRET` | `<the-exact-same-WORKER_SECRET-from-railway>` |
-
-3. Redeploy Vercel.
-   *(Do NOT use `127.0.0.1` or `localhost` in production).*
+- **Blazing-Fast Analysis**: Instant YouTube video & playlist metadata extraction without invoking heavy binaries on page load.
+- **Audio Formats & Qualities**: MP3 (`128k`, `192k`, `256k`, `320k`) and native M4A (direct AAC stream copy without re-encoding).
+- **Sequential Queue**: Strictly sequential single-concurrency queue to prevent CPU saturation and bandwidth throttling.
+- **Offline Audio Player**: Built-in audio player powered by browser IndexedDB storage for offline listening anywhere.
+- **Vercel Production Ready**: Zero external server lock-in; deployable on Vercel with optional Vercel Blob persistent storage.
+- **Strict SSRF & Security**: Fail-closed URL validation, constant-time token comparison, and path traversal protection.
 
 ---
 
-## 3. Local Development
+## Deployment on Vercel
 
-Run the worker locally:
+For complete step-by-step instructions on deploying AudioX to Vercel, consult:
+👉 **[VERCEL_DEPLOYMENT.md](file:///G:/AntiGravity%20IDE/Main/AudioX/VERCEL_DEPLOYMENT.md)**
+
+---
+
+## Local Development Workflow
+
+### 1. Start the Media Worker
+
+In a terminal window:
+
 ```bash
 cd worker
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-In another terminal, run Next.js:
+### 2. Start Next.js Frontend
+
+In another terminal window:
+
 ```bash
 npm run dev
 ```
 
-AudioX will be accessible at `http://localhost:3000`.
+Open `http://localhost:3000` in your browser.
+
+---
+
+## Testing
+
+Run frontend test suite:
+
+```bash
+npm run test
+```
+
+Run Python worker test suite:
+
+```bash
+python -m unittest worker/test_worker_security.py
+```

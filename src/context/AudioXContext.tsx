@@ -8,13 +8,13 @@ import {
   AudioFormat,
   AudioQuality,
   PlaylistTrack,
-  FilenameFormat,
-  AutoRemoveOption,
 } from '@/lib/types';
 import {
   saveDownloadToIndexedDB,
   getAllDownloadsFromIndexedDB,
   clearAllDownloadsFromIndexedDB,
+  deleteDownloadFromIndexedDB,
+  getAudioBlobFromIndexedDB,
 } from '@/lib/storage/indexeddb';
 
 interface AudioXContextType {
@@ -53,6 +53,7 @@ interface AudioXContextType {
     quality?: AudioQuality;
     startImmediately?: boolean;
   }) => Promise<void>;
+  startQueue: () => void;
   reorderJob: (id: string, direction: 'up' | 'down') => Promise<void>;
   skipJob: (id: string) => Promise<void>;
   cancelJob: (id: string) => Promise<void>;
@@ -186,6 +187,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   }, [addToast]);
 
   const removeHistoryItem = useCallback((id: string) => {
+    deleteDownloadFromIndexedDB(id).catch(() => {});
     setHistory((prev) => {
       const next = prev.filter((item) => item.id !== id);
       try {
@@ -193,12 +195,28 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
       } catch {}
       return next;
     });
-  }, []);
+    addToast('Removed from history', 'info');
+  }, [addToast]);
+
+  // Start queue runner if autoStartQueue was disabled
+  const startQueue = useCallback(() => {
+    hasUserTriggeredRef.current = true;
+    setJobs((prev) => [...prev]);
+    addToast('Queue processing started', 'info');
+  }, [addToast]);
 
   // Sequential Client-Side Queue Orchestrator (Concurrency = 1)
   useEffect(() => {
     if (isProcessingRef.current) return;
+
+    // Honor autoStartQueue setting
     if (!settings.autoStartQueue && !hasUserTriggeredRef.current) return;
+
+    // If there is any job currently in 'ready' status in manual mode, pause queue until downloaded
+    const hasReadyManualJob = jobs.some((j) => j.status === 'ready');
+    if (hasReadyManualJob && settings.downloadMode === 'manual') {
+      return;
+    }
 
     // Pick next queued track in FIFO order
     const nextJob = jobs.find((j) => j.status === 'queued');
@@ -214,7 +232,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     setJobs((prev) =>
       prev.map((j) =>
         j.id === nextJob.id
-          ? { ...j, status: 'fetching' as const, stage: 'fetching' as const, progress: 15, startedAt: Date.now(), error: undefined }
+          ? { ...j, status: 'fetching' as const, stage: 'fetching' as const, progress: 10, startedAt: Date.now(), error: undefined }
           : j
       )
     );
@@ -225,8 +243,10 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     }, 600000);
 
     (async () => {
+      let remoteJobId = nextJob.id;
+
       try {
-        // 1. Submit job to Railway worker via /api/jobs
+        // 1. Submit job to media worker via /api/jobs
         const createRes = await fetch('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -266,25 +286,33 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         }
 
         const createData = await createRes.json();
-        const remoteJobId = createData.jobId || nextJob.id;
+        remoteJobId = createData.jobId || nextJob.id;
 
-        // 2. Poll job status from Railway worker
+        // 2. Poll job status from media worker
         let isDone = false;
         while (!isDone) {
           if (controller.signal.aborted) {
-            await fetch(`/api/jobs/${remoteJobId}/cancel`, { method: 'POST' }).catch(() => {});
+            // Cancel remote worker job
+            await fetch(`/api/jobs/${encodeURIComponent(remoteJobId)}/cancel`, { method: 'POST' }).catch(() => {});
             break;
           }
 
           await new Promise((r) => setTimeout(r, 1000));
-          if (controller.signal.aborted) break;
+          if (controller.signal.aborted) {
+            await fetch(`/api/jobs/${encodeURIComponent(remoteJobId)}/cancel`, { method: 'POST' }).catch(() => {});
+            break;
+          }
 
-          const pollRes = await fetch(`/api/jobs/${remoteJobId}`, {
+          const pollRes = await fetch(`/api/jobs/${encodeURIComponent(remoteJobId)}`, {
             signal: controller.signal,
             cache: 'no-store',
           });
 
           if (!pollRes.ok) {
+            if (pollRes.status === 404) {
+              isDone = true;
+              break;
+            }
             continue;
           }
 
@@ -308,14 +336,17 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
             isDone = true;
             clearTimeout(timeoutId);
 
-            // 3. Fetch completed audio stream
-            const dlRes = await fetch(`/api/download/${workerJob.downloadToken}?jobId=${remoteJobId}`, {
-              signal: controller.signal,
-              cache: 'no-store',
-            });
+            // 3. Fetch completed audio stream using BOTH token and jobId
+            const dlRes = await fetch(
+              `/api/download/${encodeURIComponent(workerJob.downloadToken)}?jobId=${encodeURIComponent(remoteJobId)}`,
+              {
+                signal: controller.signal,
+                cache: 'no-store',
+              }
+            );
 
             if (!dlRes.ok) {
-              throw new Error('Failed to retrieve converted audio file.');
+              throw new Error('Failed to retrieve converted audio file from worker.');
             }
 
             const disposition = dlRes.headers.get('Content-Disposition') || '';
@@ -331,35 +362,13 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
 
             const blob = await dlRes.blob();
 
-            // Trigger immediate browser download
-            const blobUrl = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = blobUrl;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
-
-            // Mark complete and update state
-            const completedJob: ClientQueueJob = {
-              ...nextJob,
-              status: 'completed',
-              stage: 'ready',
-              progress: 100,
-              fileName,
-              fileSize: blob.size,
-              completedAt: Date.now(),
-            };
-
-            setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? completedJob : j)));
-            addToast(`Downloaded: ${nextJob.title}`, 'success');
-
-            // Persist to download history
+            // Persist audio blob & metadata to IndexedDB for offline listening
             if (settings.saveHistory) {
               const historyItem: DownloadHistoryItem = {
                 id: nextJob.id,
                 mediaId: nextJob.mediaId || nextJob.id,
+                jobId: remoteJobId,
+                downloadToken: workerJob.downloadToken,
                 playlistId: nextJob.playlistId,
                 title: nextJob.title,
                 artist: nextJob.artist,
@@ -371,9 +380,61 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
                 fileSize: blob.size,
                 fileSizeFormatted: `${(blob.size / (1024 * 1024)).toFixed(1)} MB`,
                 completedAt: Date.now(),
+                hasAudioBlob: true,
               };
-              saveDownloadToIndexedDB(historyItem).catch(() => {});
+              saveDownloadToIndexedDB(historyItem, blob).catch(() => {});
               setHistory((prev) => [historyItem, ...prev.filter((h) => h.id !== nextJob.id)]);
+            }
+
+            // Honor autoDownload and downloadMode
+            const shouldAutoDownload = settings.autoDownload && settings.downloadMode !== 'manual';
+
+            if (shouldAutoDownload) {
+              // Automatic trigger browser download
+              const blobUrl = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = blobUrl;
+              a.download = fileName;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+
+              const completedJob: ClientQueueJob = {
+                ...nextJob,
+                status: 'completed',
+                stage: 'ready',
+                progress: 100,
+                fileName,
+                fileSize: blob.size,
+                downloadToken: workerJob.downloadToken,
+                completedAt: Date.now(),
+              };
+
+              setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? completedJob : j)));
+              addToast(`Downloaded: ${nextJob.title}`, 'success');
+
+              // Auto-remove completed if configured
+              if (settings.autoRemoveCompleted === 'immediately') {
+                setTimeout(() => {
+                  setJobs((prev) => prev.filter((j) => j.id !== nextJob.id));
+                }, 1000);
+              }
+            } else {
+              // Manual Mode / Download & Continue
+              // Transition to 'ready' stage so user can click Download & Continue
+              const readyJob: ClientQueueJob = {
+                ...nextJob,
+                status: 'ready',
+                stage: 'ready',
+                progress: 100,
+                fileName,
+                fileSize: blob.size,
+                downloadToken: workerJob.downloadToken,
+              };
+
+              setJobs((prev) => prev.map((j) => (j.id === nextJob.id ? readyJob : j)));
+              addToast(`Ready to download: ${nextJob.title}`, 'info');
             }
           } else if (workerJob.status === 'failed') {
             isDone = true;
@@ -407,6 +468,8 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         const isAbort = controller.signal.aborted;
 
         if (isTimeout) {
+          // Cancel remote work on timeout
+          fetch(`/api/jobs/${encodeURIComponent(remoteJobId)}/cancel`, { method: 'POST' }).catch(() => {});
           const errorMsg = 'This media took too long to process.';
           setJobs((prev) =>
             prev.map((j) => (j.id === nextJob.id ? { ...j, status: 'failed', stage: 'idle', error: errorMsg } : j))
@@ -414,6 +477,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
           addToast(errorMsg, 'error');
         } else if (isAbort) {
           // Handled via user cancel or skip
+          fetch(`/api/jobs/${encodeURIComponent(remoteJobId)}/cancel`, { method: 'POST' }).catch(() => {});
         } else {
           const errorMsg = err.message || 'Unable to process this track.';
           setJobs((prev) =>
@@ -428,7 +492,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         activeAbortControllerRef.current = null;
       }
     })();
-  }, [jobs, settings.autoStartQueue, settings.saveHistory, addToast]);
+  }, [jobs, settings.autoStartQueue, settings.autoDownload, settings.downloadMode, settings.autoRemoveCompleted, settings.saveHistory, addToast]);
 
   const isDownloadedSync = useCallback(
     (mediaId: string, format?: AudioFormat): boolean => {
@@ -500,12 +564,10 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     };
 
     setJobs((prev) => {
-      // Check if this track is already in the queue!
       const existingIdx = prev.findIndex(
         (j) => (params.mediaId && j.mediaId === params.mediaId) || j.sourceUrl === params.sourceUrl
       );
       if (existingIdx !== -1) {
-        // Reuse and reset the existing track instead of creating a duplicate row!
         const existing = prev[existingIdx];
         const updated: ClientQueueJob = {
           ...existing,
@@ -523,7 +585,6 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (params.startImmediately) {
-        // Place at front of queued items
         const activeOrDone = prev.filter((j) => j.status !== 'queued');
         const queued = prev.filter((j) => j.status === 'queued');
         return [...activeOrDone, newJob, ...queued];
@@ -597,6 +658,8 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     if (activeJobIdRef.current === id) {
       activeAbortControllerRef.current?.abort();
     }
+    // Cancel remote work on worker
+    fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).catch(() => {});
     setJobs((prev) =>
       prev.map((j) => (j.id === id ? { ...j, status: 'skipped', stage: 'idle', error: undefined } : j))
     );
@@ -607,6 +670,8 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     if (activeJobIdRef.current === id) {
       activeAbortControllerRef.current?.abort();
     }
+    // Cancel remote work on worker
+    fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).catch(() => {});
     setJobs((prev) =>
       prev.map((j) => (j.id === id ? { ...j, status: 'cancelled', stage: 'idle' } : j))
     );
@@ -617,6 +682,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     if (activeJobIdRef.current === id) {
       activeAbortControllerRef.current?.abort();
     }
+    fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }).catch(() => {});
     setJobs((prev) => prev.filter((j) => j.id !== id));
     addToast('Item removed from queue', 'info');
   }, [addToast]);
@@ -655,15 +721,54 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
     addToast('Pending queue cleared', 'info');
   }, [addToast]);
 
-  const downloadTrackManually = useCallback((job: ClientQueueJob) => {
-    // Re-trigger download for completed job
-    addToast(`Re-processing download: ${job.title}`, 'info');
-    retryJob(job.id);
+  const downloadTrackManually = useCallback(async (job: ClientQueueJob) => {
+    try {
+      // 1. Try local IndexedDB blob first for instant offline download
+      const blob = await getAudioBlobFromIndexedDB(job.id);
+      if (blob) {
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = job.fileName || `${job.title}.${job.format}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+      } else if (job.downloadToken) {
+        // Fall back to authorized remote worker stream
+        const a = document.createElement('a');
+        a.href = `/api/download/${encodeURIComponent(job.downloadToken)}?jobId=${encodeURIComponent(job.id)}`;
+        a.download = job.fileName || `${job.title}.${job.format}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => {
+          if (a.parentNode) a.parentNode.removeChild(a);
+        }, 1000);
+      } else {
+        // Re-process if neither token nor blob is available
+        addToast(`Re-processing download: ${job.title}`, 'info');
+        retryJob(job.id);
+        return;
+      }
+
+      // If job was in ready state waiting for user download, advance to completed
+      if (job.status === 'ready') {
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.id === job.id ? { ...j, status: 'completed', completedAt: Date.now() } : j
+          )
+        );
+      }
+      addToast(`Downloaded: ${job.title}`, 'success');
+    } catch {
+      addToast('Failed to download track.', 'error');
+    }
   }, [addToast, retryJob]);
 
   // Derived job lists
   const activeJob = jobs.find(
-    (j) => j.status === 'preparing' || j.status === 'fetching' || j.status === 'converting' || j.status === 'downloading'
+    (j) => j.status === 'preparing' || j.status === 'fetching' || j.status === 'converting' || j.status === 'downloading' || j.status === 'ready'
   ) || null;
 
   const queuedJobs = jobs.filter((j) => j.status === 'queued');
@@ -700,6 +805,7 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
         getQueuedConflicts,
         addSingleJob,
         addPlaylistBatch,
+        startQueue,
         reorderJob,
         skipJob,
         cancelJob,

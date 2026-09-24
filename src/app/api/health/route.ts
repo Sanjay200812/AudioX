@@ -20,5 +20,7 @@ export async function GET() {
     queue: Boolean(workerHealth.queue),
     worker: workerConfigured ? workerHealth.status : 'unconfigured',
     timestamp: new Date().toISOString(),
+  }, {
+    status: isOk ? 200 : 503,
   });
 }

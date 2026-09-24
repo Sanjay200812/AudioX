@@ -18,6 +18,7 @@ import {
   SkipForward,
   ArrowRight,
   PartyPopper,
+  Play,
 } from 'lucide-react';
 
 export default function QueuePage() {
@@ -30,6 +31,7 @@ export default function QueuePage() {
     skippedJobs,
     clearPendingQueue,
     retryJob,
+    startQueue,
   } = useAudioX();
 
   const totalCount = jobs.length;
@@ -87,6 +89,17 @@ export default function QueuePage() {
               <SkipForward size={12} className="text-amber-400" />
               <span>Skipped: {skippedJobs.length}</span>
             </div>
+          )}
+
+          {!activeJob && queuedJobs.length > 0 && (
+            <button
+              type="button"
+              onClick={startQueue}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-md transition-colors cursor-pointer"
+            >
+              <Play size={12} className="fill-white" />
+              <span>Start Queue</span>
+            </button>
           )}
         </div>
       </div>
