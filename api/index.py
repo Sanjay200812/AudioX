@@ -158,7 +158,7 @@ def classify_error(err_str: str) -> tuple[str, str, int]:
         return "PRIVATE_VIDEO", "This video is private and cannot be processed.", 403
 
     if "bot" in raw or "confirm you're not a bot" in raw:
-        return "BOT_DETECTION", "YouTube bot check triggered. Please try again or download via personal device.", 403
+        return "BOT_DETECTION", f"Bot check triggered: {err_str}", 403
 
     if "sign in" in raw or "login" in raw or "members-only" in raw or "premium" in raw:
         return "LOGIN_REQUIRED", "This video requires account authentication.", 403
