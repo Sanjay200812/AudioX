@@ -265,6 +265,7 @@ def execute_media_process(
         "no_warnings": True,
         "socket_timeout": 30,
         "ffmpeg_location": ffmpeg_exe,
+        "remote_components": ["ejs:github"],
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
@@ -275,22 +276,40 @@ def execute_media_process(
         base_ydl_opts["js_runtimes"] = js_runtimes
 
     cookie_str = os.getenv("YOUTUBE_COOKIES") or os.getenv("YT_COOKIES")
+    bundled_cookie = Path(__file__).parent / "cookies.txt"
+    root_cookie = Path("cookies.txt")
+
+    has_cookies = False
     if cookie_str:
         cookie_file = workspace / "cookies.txt"
         cookie_file.write_text(cookie_str, encoding="utf-8")
         base_ydl_opts["cookiefile"] = str(cookie_file)
+        has_cookies = True
+    elif bundled_cookie.is_file():
+        base_ydl_opts["cookiefile"] = str(bundled_cookie.resolve())
+        has_cookies = True
+    elif root_cookie.is_file():
+        base_ydl_opts["cookiefile"] = str(root_cookie.resolve())
+        has_cookies = True
 
     proxy = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
     if proxy:
         base_ydl_opts["proxy"] = proxy
 
-    # Fallback strategies: visionos is yt-dlp's jsless client and avoids SABR/bot-detection blocks on cloud IPs
-    client_strategies = [
-        ["visionos", "android"],
-        ["visionos"],
-        ["android"],
-        ["web"],
-    ]
+    # Fallback strategies: with cookies use web first for highest quality audio; fallback to visionos & android
+    if has_cookies:
+        client_strategies = [
+            ["web"],
+            ["visionos", "android"],
+            ["android"],
+        ]
+    else:
+        client_strategies = [
+            ["visionos", "android"],
+            ["visionos"],
+            ["android"],
+            ["web"],
+        ]
 
     info = None
     last_exc = None
@@ -316,11 +335,9 @@ def execute_media_process(
         cleanup_directory(workspace)
         if last_exc:
             err_code, user_msg, http_status = classify_error(str(last_exc))
-            # Include strategy diagnostics
-            detail_msg = f"{user_msg} Strategies attempted: {strategy_errors}"
             raise HTTPException(
                 status_code=http_status,
-                detail={"error": detail_msg, "errorCode": err_code, "strategies": strategy_errors},
+                detail={"error": user_msg, "errorCode": err_code},
             )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
