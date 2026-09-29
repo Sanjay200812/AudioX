@@ -181,7 +181,7 @@ def classify_error(err_str: str) -> tuple[str, str, int]:
     if "duration" in raw and "exceed" in raw:
         return "MAX_DURATION_EXCEEDED", "Video duration exceeds the maximum limit (120 minutes).", 400
 
-    return "PROCESSING_FAILED", "Failed to process audio from video.", 500
+    return "PROCESSING_FAILED", f"Processing error: {err_str}", 500
 
 
 def cleanup_directory(path: Path):
@@ -279,37 +279,39 @@ def execute_media_process(
     bundled_cookie = Path(__file__).parent / "cookies.txt"
     root_cookie = Path("cookies.txt")
 
+    cookie_file = workspace / "cookies.txt"
     has_cookies = False
+
     if cookie_str:
-        cookie_file = workspace / "cookies.txt"
         cookie_file.write_text(cookie_str, encoding="utf-8")
         base_ydl_opts["cookiefile"] = str(cookie_file)
         has_cookies = True
     elif bundled_cookie.is_file():
-        base_ydl_opts["cookiefile"] = str(bundled_cookie.resolve())
-        has_cookies = True
+        try:
+            shutil.copy2(str(bundled_cookie), str(cookie_file))
+            base_ydl_opts["cookiefile"] = str(cookie_file)
+            has_cookies = True
+        except Exception:
+            pass
     elif root_cookie.is_file():
-        base_ydl_opts["cookiefile"] = str(root_cookie.resolve())
-        has_cookies = True
+        try:
+            shutil.copy2(str(root_cookie), str(cookie_file))
+            base_ydl_opts["cookiefile"] = str(cookie_file)
+            has_cookies = True
+        except Exception:
+            pass
 
     proxy = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
     if proxy:
         base_ydl_opts["proxy"] = proxy
 
-    # Fallback strategies: with cookies use web first for highest quality audio; fallback to visionos & android
-    if has_cookies:
-        client_strategies = [
-            ["web"],
-            ["visionos", "android"],
-            ["android"],
-        ]
-    else:
-        client_strategies = [
-            ["visionos", "android"],
-            ["visionos"],
-            ["android"],
-            ["web"],
-        ]
+    # Fallback strategies: visionos is jsless and works on Lambda without Node.js; fallback to web and android
+    client_strategies = [
+        ["visionos", "android"],
+        ["web"],
+        ["visionos"],
+        ["android"],
+    ]
 
     info = None
     last_exc = None
