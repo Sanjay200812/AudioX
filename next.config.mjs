@@ -19,18 +19,22 @@ const nextConfig = {
     ],
   },
   rewrites: async () => {
-    return process.env.NODE_ENV === 'development'
-      ? [
-          {
-            source: '/api/process',
-            destination: 'http://127.0.0.1:5328/api/process',
-          },
-          {
-            source: '/api/process/:path*',
-            destination: 'http://127.0.0.1:5328/api/process/:path*',
-          },
-        ]
-      : [];
+    return [
+      {
+        source: '/api/process',
+        destination:
+          process.env.NODE_ENV === 'development'
+            ? 'http://127.0.0.1:5328/api/process'
+            : '/api/index.py',
+      },
+      {
+        source: '/api/process/:path*',
+        destination:
+          process.env.NODE_ENV === 'development'
+            ? 'http://127.0.0.1:5328/api/process/:path*'
+            : '/api/index.py',
+      },
+    ];
   },
 };
 

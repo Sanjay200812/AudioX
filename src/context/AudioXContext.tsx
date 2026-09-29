@@ -338,13 +338,17 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
             errData = await processRes.json();
           } catch {}
 
-          const errorCode = errData.errorCode || 'PROCESSING_FAILED';
+          const errorCode = errData.errorCode || (processRes.status === 404 ? 'ENDPOINT_NOT_FOUND' : 'PROCESSING_FAILED');
           const isRestricted = ['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'].includes(errorCode);
           const errorMsg =
             errData.error ||
             (isRestricted
               ? 'This video is restricted or requires authentication.'
-              : 'Failed to process audio from YouTube.');
+              : processRes.status === 404
+              ? 'Audio processing endpoint not found. Please ensure Vercel deployment has finished.'
+              : `Audio processing error (${processRes.status}). Please retry.`);
+
+          console.error('[AudioX] Processing request failed:', processRes.status, errData);
 
           setJobs((prev) =>
             prev.map((j) =>
