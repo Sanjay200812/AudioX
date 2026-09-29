@@ -32,6 +32,21 @@ app.add_middleware(
     expose_headers=["Content-Disposition", "Content-Length", "Content-Type"],
 )
 
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """
+    Flatten error responses so detail.error / detail.errorCode are accessible at top-level.
+    """
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=detail)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": str(detail), "errorCode": "HTTP_ERROR"},
+    )
+
+
 MAX_DURATION_SECONDS = 120 * 60  # 120 minutes max
 
 BITRATE_MAP = {
@@ -142,6 +157,9 @@ def classify_error(err_str: str) -> tuple[str, str, int]:
     if "private video" in raw or "this video is private" in raw:
         return "PRIVATE_VIDEO", "This video is private and cannot be processed.", 403
 
+    if "bot" in raw or "confirm you're not a bot" in raw:
+        return "BOT_DETECTION", "YouTube bot check triggered. Please try again or download via personal device.", 403
+
     if "sign in" in raw or "login" in raw or "members-only" in raw or "premium" in raw:
         return "LOGIN_REQUIRED", "This video requires account authentication.", 403
 
@@ -236,7 +254,10 @@ def execute_media_process(
     format_selector = "ba[ext=m4a]/ba/b" if target_format == "m4a" else "ba/b"
     output_template = str(workspace / "source.%(ext)s")
 
-    ydl_opts = {
+    node_exe = shutil.which("node") or shutil.which("nodejs")
+    js_runtimes = {"node": {"path": node_exe}} if node_exe else {}
+
+    base_ydl_opts = {
         "format": format_selector,
         "outtmpl": output_template,
         "noplaylist": True,
@@ -244,21 +265,58 @@ def execute_media_process(
         "no_warnings": True,
         "socket_timeout": 30,
         "ffmpeg_location": ffmpeg_exe,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target_url, download=True)
-    except Exception as e:
-        cleanup_directory(workspace)
-        err_code, user_msg, http_status = classify_error(str(e))
-        raise HTTPException(
-            status_code=http_status,
-            detail={"error": user_msg, "errorCode": err_code},
-        )
+    if js_runtimes:
+        base_ydl_opts["js_runtimes"] = js_runtimes
+
+    cookie_str = os.getenv("YOUTUBE_COOKIES") or os.getenv("YT_COOKIES")
+    if cookie_str:
+        cookie_file = workspace / "cookies.txt"
+        cookie_file.write_text(cookie_str, encoding="utf-8")
+        base_ydl_opts["cookiefile"] = str(cookie_file)
+
+    proxy = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+    if proxy:
+        base_ydl_opts["proxy"] = proxy
+
+    # Fallback strategies: android player client avoids bot-detection & SABR errors on cloud IPs
+    client_strategies = [
+        ["android", "web"],
+        ["tv_embedded", "android"],
+        ["web"],
+    ]
+
+    info = None
+    last_exc = None
+
+    for clients in client_strategies:
+        curr_opts = dict(base_ydl_opts)
+        curr_opts["extractor_args"] = {"youtube": {"player_client": clients}}
+        try:
+            with yt_dlp.YoutubeDL(curr_opts) as ydl:
+                info = ydl.extract_info(target_url, download=True)
+                if info:
+                    break
+        except Exception as e:
+            last_exc = e
+            raw_err = str(e).lower()
+            if "private video" in raw_err or "does not exist" in raw_err or "not found" in raw_err:
+                break
+            continue
 
     if not info:
         cleanup_directory(workspace)
+        if last_exc:
+            err_code, user_msg, http_status = classify_error(str(last_exc))
+            raise HTTPException(
+                status_code=http_status,
+                detail={"error": user_msg, "errorCode": err_code},
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "Video not found or unavailable.", "errorCode": "VIDEO_UNAVAILABLE"},

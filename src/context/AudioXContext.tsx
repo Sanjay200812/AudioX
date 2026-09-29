@@ -338,10 +338,20 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
             errData = await processRes.json();
           } catch {}
 
-          const errorCode = errData.errorCode || (processRes.status === 404 ? 'ENDPOINT_NOT_FOUND' : 'PROCESSING_FAILED');
+          const rawDetail = typeof errData.detail === 'object' && errData.detail !== null ? errData.detail : {};
+          const errorCode =
+            errData.errorCode ||
+            rawDetail.errorCode ||
+            (processRes.status === 404 ? 'ENDPOINT_NOT_FOUND' : 'PROCESSING_FAILED');
+
+          const backendMsg =
+            errData.error ||
+            rawDetail.error ||
+            (typeof errData.detail === 'string' ? errData.detail : null);
+
           const isRestricted = ['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'].includes(errorCode);
           const errorMsg =
-            errData.error ||
+            backendMsg ||
             (isRestricted
               ? 'This video is restricted or requires authentication.'
               : processRes.status === 404
