@@ -102,10 +102,15 @@ export async function checkWorkerHealth(): Promise<{
     };
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    const isLocalhost = workerUrl.includes('127.0.0.1') || workerUrl.includes('localhost');
     return {
       ok: false,
       status: 'unreachable',
-      error: isTimeout ? 'Worker connection timed out' : 'Worker connection failed',
+      error: isTimeout
+        ? 'Worker connection timed out'
+        : isLocalhost
+        ? 'Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.'
+        : 'Worker connection failed',
     };
   }
 }
@@ -132,6 +137,10 @@ export async function createWorkerJob(params: CreateWorkerJobParams): Promise<{ 
   } catch (err: any) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
       throw new Error('Worker request timed out. Please try again.');
+    }
+    const isLocalhost = workerUrl.includes('127.0.0.1') || workerUrl.includes('localhost');
+    if (isLocalhost) {
+      throw new Error('Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.');
     }
     throw new Error('Audio processing worker is unreachable.');
   }

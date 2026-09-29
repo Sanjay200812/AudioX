@@ -47,9 +47,15 @@ export async function POST(req: NextRequest) {
     }
 
     if (!isWorkerConfigured()) {
+      const isLocalhost =
+        process.env.NODE_ENV !== 'production' ||
+        (process.env.AUDIOX_WORKER_URL || '').includes('127.0.0.1') ||
+        (process.env.AUDIOX_WORKER_URL || '').includes('localhost');
       return NextResponse.json(
         {
-          error: 'Audio processing service is temporarily unavailable.',
+          error: isLocalhost
+            ? 'Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.'
+            : 'Audio processing service is temporarily unavailable.',
           errorCode: 'WORKER_UNAVAILABLE',
         },
         { status: 503 }
@@ -72,17 +78,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result, { status: 201 });
   } catch (err: any) {
     console.error('[api/jobs] Job creation error:', err?.message || err);
-    const errMsg = (err?.message || '').toLowerCase();
-    const isNetwork = errMsg.includes('fetch') || errMsg.includes('econnrefused') || errMsg.includes('unavailable');
+    const rawMsg = err?.message || '';
+    const errLower = rawMsg.toLowerCase();
+    const isOffline =
+      errLower.includes('offline') ||
+      errLower.includes('unreachable') ||
+      errLower.includes('fetch') ||
+      errLower.includes('econnrefused') ||
+      errLower.includes('unavailable');
+    const isLocalhost =
+      process.env.NODE_ENV !== 'production' ||
+      (process.env.AUDIOX_WORKER_URL || '').includes('127.0.0.1') ||
+      (process.env.AUDIOX_WORKER_URL || '').includes('localhost');
+
+    let userError = rawMsg || 'Failed to submit processing job.';
+    if (isOffline && isLocalhost) {
+      userError = 'Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.';
+    } else if (isOffline) {
+      userError = 'Audio processing service is temporarily unavailable.';
+    }
 
     return NextResponse.json(
       {
-        error: isNetwork
-          ? 'Audio processing service is temporarily unavailable.'
-          : err.message || 'Failed to submit processing job.',
-        errorCode: isNetwork ? 'WORKER_UNAVAILABLE' : 'JOB_CREATION_FAILED',
+        error: userError,
+        errorCode: isOffline ? 'WORKER_UNAVAILABLE' : 'JOB_CREATION_FAILED',
       },
-      { status: isNetwork ? 503 : 400 }
+      { status: isOffline ? 503 : 400 }
     );
   }
 }

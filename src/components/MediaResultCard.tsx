@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import {
@@ -52,6 +52,12 @@ export function MediaResultCard({ metadata, playlist, onDone }: MediaResultCardP
 
   const [format, setFormat] = useState<AudioFormat>(settings.defaultFormat);
   const [quality, setQuality] = useState<AudioQuality>(settings.defaultQuality);
+
+  // Synchronize format and quality when newly analyzed media loads or settings default updates
+  useEffect(() => {
+    setFormat(settings.defaultFormat);
+    setQuality(settings.defaultQuality);
+  }, [metadata?.id, playlist?.id, settings.defaultFormat, settings.defaultQuality]);
   const [isExpanded, setIsExpanded] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);

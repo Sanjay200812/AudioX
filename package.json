@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "next dev",
+    "dev": "concurrently -k -n web,worker -c cyan,magenta \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev:web": "next dev",
+    "dev:worker": "cd worker && cross-env WORKER_SECRET=local_dev_secret TEMP_DIR=../.audiox_data python -m uvicorn app:app --host 127.0.0.1 --port 8000",
     "build": "next build",
     "start": "next start",
     "test": "vitest run"
@@ -14,8 +16,6 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@supabase/ssr": "^0.12.7",
-    "@supabase/supabase-js": "^2.117.1",
     "@types/node": "^26.6.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -36,6 +36,8 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
     "vitest": "^5.0.1"
   }
 }

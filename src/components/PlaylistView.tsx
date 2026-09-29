@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Image from 'next/image';
 import { PlaylistMetadata, AudioFormat, AudioQuality } from '@/lib/types';
 import { SourceBadge } from './SourceBadge';
@@ -34,6 +34,11 @@ export function PlaylistView({ playlist, onDone }: PlaylistViewProps) {
   const [filterMode, setFilterMode] = useState<'all' | 'selected'>('all');
   const [format, setFormat] = useState<AudioFormat>(settings.defaultFormat);
   const [quality, setQuality] = useState<AudioQuality>(settings.defaultQuality);
+
+  useEffect(() => {
+    setFormat(settings.defaultFormat);
+    setQuality(settings.defaultQuality);
+  }, [playlist.id, settings.defaultFormat, settings.defaultQuality]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 

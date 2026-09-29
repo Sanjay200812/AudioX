@@ -71,7 +71,7 @@ interface AudioXContextType {
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
-  defaultFormat: 'm4a',
+  defaultFormat: 'mp3',
   defaultQuality: 'high',
   filenameFormat: 'artist_title',
   autoStartQueue: true,
@@ -114,10 +114,25 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
   // Load persistent settings & history & queue jobs on mount
   useEffect(() => {
     try {
-      const storedSettings = localStorage.getItem('audiox_settings');
-      if (storedSettings) {
-        setSettings((prev) => ({ ...prev, ...JSON.parse(storedSettings) }));
+      const storedSettingsRaw = localStorage.getItem('audiox_settings');
+      let currentSettings: UserSettings = { ...DEFAULT_SETTINGS };
+      if (storedSettingsRaw) {
+        currentSettings = { ...currentSettings, ...JSON.parse(storedSettingsRaw) };
       }
+
+      // One-time local settings migration so old default M4A does not override MP3 default
+      const migrationKey = 'audiox_default_format_migrated_v1';
+      const hasMigrated = localStorage.getItem(migrationKey);
+
+      if (!hasMigrated) {
+        currentSettings.defaultFormat = 'mp3';
+        try {
+          localStorage.setItem('audiox_settings', JSON.stringify(currentSettings));
+          localStorage.setItem(migrationKey, 'true');
+        } catch {}
+      }
+
+      setSettings(currentSettings);
     } catch {}
 
     try {
@@ -270,9 +285,11 @@ export function AudioXProvider({ children }: { children: React.ReactNode }) {
             errData = await createRes.json();
           } catch {}
           const isWorkerUnavail = errData.errorCode === 'WORKER_UNAVAILABLE' || createRes.status === 503;
-          const errorMsg = isWorkerUnavail
-            ? 'Audio processing service is temporarily unavailable.'
-            : errData.error || 'Failed to submit processing job.';
+          const errorMsg =
+            errData.error ||
+            (isWorkerUnavail
+              ? 'Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.'
+              : 'Failed to submit processing job.');
 
           setJobs((prev) =>
             prev.map((j) =>

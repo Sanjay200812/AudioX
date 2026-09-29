@@ -106,6 +106,7 @@ export default function HomePage() {
               </button>
             </div>
             <MediaResultCard
+              key={singleResult?.id || playlistResult?.id || 'result'}
               metadata={singleResult}
               playlist={playlistResult}
               onDone={handleReset}
