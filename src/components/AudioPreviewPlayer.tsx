@@ -42,16 +42,8 @@ export function AudioPreviewPlayer({ id, token, jobId }: AudioPreviewPlayerProps
         } catch {}
       }
 
-      // 2. Fall back to authorized remote proxy stream with both token and jobId
-      if (token && jobId && active) {
-        const streamUrl = `/api/download/${encodeURIComponent(token)}?jobId=${encodeURIComponent(jobId)}`;
-        setAudioSrc(streamUrl);
-        setIsBlobSource(false);
-        return;
-      }
-
       if (active) {
-        setLoadError('Audio source expired or unavailable');
+        setLoadError('Audio not found in offline storage');
       }
     }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 describe('Localhost Development Configuration & Migrations', () => {
-  const MIGRATION_KEY = 'audiox_default_format_migrated_v1';
+  const MIGRATION_KEY = 'audiox_default_format_migrated_v2';
   const SETTINGS_KEY = 'audiox_settings';
 
   let mockLocalStorage: Record<string, string> = {};
@@ -37,7 +37,9 @@ describe('Localhost Development Configuration & Migrations', () => {
     // Execute migration logic
     const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY)!);
     if (!hasMigrated) {
-      stored.defaultFormat = 'mp3';
+      if (stored.defaultFormat === 'm4a') {
+        stored.defaultFormat = 'mp3';
+      }
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(stored));
       localStorage.setItem(MIGRATION_KEY, 'true');
     }
@@ -70,20 +72,30 @@ describe('Localhost Development Configuration & Migrations', () => {
     expect(stored.defaultFormat).toBe('m4a');
   });
 
-  it('provides helpful offline worker guidance on localhost when worker is unreachable', () => {
-    const isLocalhost = true;
-    const errLower = 'audio processing worker is unreachable.';
-    const isOffline =
-      errLower.includes('offline') ||
-      errLower.includes('unreachable') ||
-      errLower.includes('econnrefused') ||
-      errLower.includes('fetch');
+  it('correctly handles native processing error codes without external worker messages', () => {
+    const errorCodes = [
+      'VIDEO_UNAVAILABLE',
+      'PRIVATE_VIDEO',
+      'LOGIN_REQUIRED',
+      'AGE_RESTRICTED',
+      'LIVE_STREAM_UNSUPPORTED',
+      'RATE_LIMITED',
+      'NETWORK_ERROR',
+      'MAX_DURATION_EXCEEDED',
+      'PROCESSING_FAILED',
+    ];
 
-    let userError = 'Generic failure';
-    if (isOffline && isLocalhost) {
-      userError = 'Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.';
+    const permanentRestricted = ['LOGIN_REQUIRED', 'AGE_RESTRICTED', 'PRIVATE_VIDEO', 'VIDEO_UNAVAILABLE'];
+
+    // Verify all restricted codes correctly indicate access restriction (no retry)
+    for (const code of permanentRestricted) {
+      expect(errorCodes).toContain(code);
+      const allowRetry = !permanentRestricted.includes(code);
+      expect(allowRetry).toBe(false);
     }
 
-    expect(userError).toBe('Local AudioX worker is offline. Start the worker on 127.0.0.1:8000.');
+    // Temporary errors should allow retry
+    expect(!permanentRestricted.includes('NETWORK_ERROR')).toBe(true);
+    expect(!permanentRestricted.includes('RATE_LIMITED')).toBe(true);
   });
 });

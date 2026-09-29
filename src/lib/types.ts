@@ -29,6 +29,7 @@ export type JobProgressStage =
   | 'converting'
   | 'metadata'
   | 'finalizing'
+  | 'downloading file'
   | 'ready';
 
 export type FilenameFormat =

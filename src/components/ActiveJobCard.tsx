@@ -23,6 +23,10 @@ export function ActiveJobCard({ job, totalInPlaylist }: ActiveJobCardProps) {
 
   const getStageLabel = () => {
     switch (job.stage) {
+      case 'resolving':
+        return 'Resolving YouTube media...';
+      case 'downloading':
+        return 'Downloading audio stream...';
       case 'preparing':
         return 'Preparing job workspace...';
       case 'fetching':
@@ -33,7 +37,9 @@ export function ActiveJobCard({ job, totalInPlaylist }: ActiveJobCardProps) {
         return `Converting to ${job.format.toUpperCase()} (${job.quality})...`;
       case 'metadata':
       case 'finalizing':
-        return 'Embedding metadata & artwork...';
+        return 'Finalizing audio & metadata...';
+      case 'downloading file':
+        return 'Downloading audio file...';
       case 'ready':
         return 'Ready to download';
       default:

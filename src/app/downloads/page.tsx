@@ -49,22 +49,7 @@ export default function DownloadsPage() {
         return;
       }
 
-      // 2. Fall back to remote worker authorized stream with both token and jobId
-      const jobId = item.jobId || item.id;
-      if (item.downloadToken && jobId) {
-        const link = document.createElement('a');
-        link.href = `/api/download/${encodeURIComponent(item.downloadToken)}?jobId=${encodeURIComponent(jobId)}`;
-        link.download = item.fileName || `${item.title}.${item.format}`;
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-          if (link.parentNode) link.parentNode.removeChild(link);
-        }, 1000);
-        addToast(`Downloading ${item.fileName || 'audio'}`, 'success');
-        return;
-      }
-
-      addToast('Audio download has expired on worker. Please re-queue the track.', 'error');
+      addToast('Audio file not found in offline storage. Please re-convert the track from the home page.', 'error');
     } catch {
       addToast('Failed to download audio file.', 'error');
     }

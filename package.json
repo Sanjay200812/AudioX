@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently -k -n web,worker -c cyan,magenta \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev": "concurrently -k -n next,python -c cyan,yellow \"next dev\" \"python -m uvicorn api.process:app --host 127.0.0.1 --port 5328\"",
     "dev:web": "next dev",
-    "dev:worker": "cd worker && cross-env WORKER_SECRET=local_dev_secret TEMP_DIR=../.audiox_data python -m uvicorn app:app --host 127.0.0.1 --port 8000",
+    "dev:python": "python -m uvicorn api.process:app --host 127.0.0.1 --port 5328",
     "build": "next build",
     "start": "next start",
     "test": "vitest run"

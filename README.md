@@ -1,48 +1,41 @@
 # AudioX
 
-**AudioX** is a modern, high-performance YouTube audio downloader and offline listening web application built with Next.js and React.
+**AudioX** is a modern, high-performance YouTube audio downloader and offline listening web application built with Next.js, React, and native Vercel Serverless Python processing.
 
 ---
 
 ## Architecture Overview
 
-AudioX combines lightweight edge/serverless metadata extraction with dedicated media processing:
+AudioX runs **100% inside Vercel** with zero external server dependencies:
 
 ```
-User Browser
-    │
-    ▼
-Next.js Frontend (Vercel)
-    │
-    ├── Native Metadata Analysis (/api/analyze)
-    │   └── oEmbed + Lightweight Watch Page Parser (0s delay, pure TypeScript)
-    │
-    ├── Sequential Queue & Download State
-    │   └── Bounded FIFO queue orchestration with real-time stage tracking
-    │
-    ├── Browser Offline Storage
-    │   └── IndexedDB v2 (audio_blobs store for full offline playback)
-    │
-    └── Media Worker Client (/api/jobs, /api/download)
-            │ (Server-to-Server authenticated HTTP)
-            ▼
-    Media Processing Worker
-            │
-            ├── yt-dlp (Native Python library audio stream extraction)
-            ├── FFmpeg / ffprobe (libmp3lame MP3 transcoding & native M4A optimization)
-            └── Automated temporary file lifecycle & cleanup
+User Browser (PWA & Offline Playback via IndexedDB)
+                     │
+                     ▼
+    ┌───────────────────────────────────┐
+    │       Vercel (Production)         │
+    │                                   │
+    │  • Next.js App Router             │
+    │  • Fast Metadata Analyzer         │
+    │    (/api/analyze - pure TS)       │
+    │  • Native Python Media Function   │
+    │    (/api/process - Python 3.12)   │
+    │    ├── yt-dlp                     │
+    │    ├── Bundled static FFmpeg      │
+    │    └── Chunked response streaming │
+    └───────────────────────────────────┘
 ```
 
 ---
 
 ## Features
 
-- **Blazing-Fast Analysis**: Instant YouTube video & playlist metadata extraction without invoking heavy binaries on page load.
-- **Audio Formats & Qualities**: MP3 (`128k`, `192k`, `256k`, `320k`) and native M4A (direct AAC stream copy without re-encoding).
-- **Sequential Queue**: Strictly sequential single-concurrency queue to prevent CPU saturation and bandwidth throttling.
-- **Offline Audio Player**: Built-in audio player powered by browser IndexedDB storage for offline listening anywhere.
-- **Vercel Production Ready**: Zero external server lock-in; deployable on Vercel with optional Vercel Blob persistent storage.
-- **Strict SSRF & Security**: Fail-closed URL validation, constant-time token comparison, and path traversal protection.
+- **100% Vercel-Native**: Completely self-contained within a single Vercel deployment. No Railway, no external worker, no Supabase.
+- **Default MP3 Format**: Converts YouTube tracks to MP3 (`128k`, `192k`, `256k`, `320k`) or native M4A (direct AAC stream copy).
+- **Sequential Client Queue**: Strictly single-concurrency (`concurrency = 1`) browser queue orchestrating per-track processing and downloads.
+- **Chunked Streamed Responses**: Large audio responses stream directly from the Python serverless function to the browser without exceeding function payload memory limits.
+- **Offline Audio Player**: Built-in audio player powered by browser IndexedDB storage for true offline listening.
+- **Strict Security**: SSRF protection, fail-closed URL validation, and automatic cleanup of temporary files in `/tmp`.
 
 ---
 
@@ -55,37 +48,21 @@ For complete step-by-step instructions on deploying AudioX to Vercel, consult:
 
 ## Local Development Workflow
 
-### 1. Start the Media Worker
-
-In a terminal window:
-
-```bash
-cd worker
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
-```
-
-### 2. Start Next.js Frontend
-
-In another terminal window:
+Run the application:
 
 ```bash
 npm run dev
 ```
 
+This single command launches both the Next.js dev server and the local Python media processing function.
 Open `http://localhost:3000` in your browser.
 
 ---
 
 ## Testing
 
-Run frontend test suite:
+Run the test suite:
 
 ```bash
-npm run test
-```
-
-Run Python worker test suite:
-
-```bash
-python -m unittest worker/test_worker_security.py
+npm test
 ```

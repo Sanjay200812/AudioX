@@ -18,6 +18,20 @@ const nextConfig = {
       },
     ],
   },
+  rewrites: async () => {
+    return process.env.NODE_ENV === 'development'
+      ? [
+          {
+            source: '/api/process',
+            destination: 'http://127.0.0.1:5328/api/process',
+          },
+          {
+            source: '/api/process/:path*',
+            destination: 'http://127.0.0.1:5328/api/process/:path*',
+          },
+        ]
+      : [];
+  },
 };
 
 export default nextConfig;
