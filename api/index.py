@@ -284,10 +284,11 @@ def execute_media_process(
     if proxy:
         base_ydl_opts["proxy"] = proxy
 
-    # Fallback strategies: android player client avoids bot-detection & SABR errors on cloud IPs
+    # Fallback strategies: visionos is yt-dlp's jsless client and avoids SABR/bot-detection blocks on cloud IPs
     client_strategies = [
-        ["android", "web"],
-        ["tv_embedded", "android"],
+        ["visionos", "android"],
+        ["visionos"],
+        ["android"],
         ["web"],
     ]
 
