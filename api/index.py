@@ -294,7 +294,7 @@ def execute_media_process(
 
     info = None
     last_exc = None
-
+    strategy_errors = {}
     for clients in client_strategies:
         curr_opts = dict(base_ydl_opts)
         curr_opts["extractor_args"] = {"youtube": {"player_client": clients}}
@@ -304,6 +304,8 @@ def execute_media_process(
                 if info:
                     break
         except Exception as e:
+            strategy_name = "+".join(clients)
+            strategy_errors[strategy_name] = str(e)
             last_exc = e
             raw_err = str(e).lower()
             if "private video" in raw_err or "does not exist" in raw_err or "not found" in raw_err:
@@ -314,9 +316,11 @@ def execute_media_process(
         cleanup_directory(workspace)
         if last_exc:
             err_code, user_msg, http_status = classify_error(str(last_exc))
+            # Include strategy diagnostics
+            detail_msg = f"{user_msg} Strategies attempted: {strategy_errors}"
             raise HTTPException(
                 status_code=http_status,
-                detail={"error": user_msg, "errorCode": err_code},
+                detail={"error": detail_msg, "errorCode": err_code, "strategies": strategy_errors},
             )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
